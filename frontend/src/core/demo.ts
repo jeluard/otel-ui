@@ -120,7 +120,7 @@ function generateTrace(traceId: string): TraceComplete {
     spans:          sorted,
     root_span_name: sorted[0]?.name || 'trace',
     duration_ms:    totalDurationNs / 1e6,
-    started_at:     Date.now(),
+    started_at:     traceStartNano,
   };
 }
 
