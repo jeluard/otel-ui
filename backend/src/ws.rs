@@ -36,7 +36,9 @@ pub async fn run_http_server(state: SharedState, bind: &str) -> anyhow::Result<(
 
     info!("HTTP server listening on {}", bind);
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async { tokio::signal::ctrl_c().await.ok(); })
+        .await?;
     Ok(())
 }
 
