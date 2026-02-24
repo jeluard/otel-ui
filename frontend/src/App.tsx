@@ -72,7 +72,8 @@ const WS_URL = (() => {
 })();
 
 const NODE_SPAN_MAX    = 200;
-const MAX_STATS_TRACES = 500;
+/** Keep traces within this rolling window for the Statistics view (ms). */
+const STATS_WINDOW_MS  = 10 * 60 * 1000; // 10 minutes
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
@@ -88,8 +89,6 @@ export default function App() {
   const [spansFlashing,    setSpansFlashing]    = useState(false);
   const [showHideRules,    setShowHideRules]    = useState(false);
   const [completedTraces,  setCompletedTraces]  = useState<TraceComplete[]>([]);
-  const [totalTracesSeen,  setTotalTracesSeen]  = useState(0);
-  const totalTracesSeenRef = useRef(0);
 
   // ── Mutable shared state (NOT React state — avoids re-renders) ─────────────
   const sharedRef = useRef<SharedState>({
@@ -296,19 +295,10 @@ export default function App() {
         if (hiddenRules.length && t.spans.every(s => isSpanHidden(s))) break;
         st.tracesThisSecond++;
         tracesPanelRef.current?.onTraceCompleted(t, activeTabRef.current);
-        totalTracesSeenRef.current++;
-        const n = totalTracesSeenRef.current;
-        setTotalTracesSeen(n);
         setCompletedTraces(prev => {
-          // Reservoir sampling (Algorithm R): uniform random sample of all traces ever seen
-          if (prev.length < MAX_STATS_TRACES) return [...prev, t];
-          const j = Math.floor(Math.random() * n);
-          if (j < MAX_STATS_TRACES) {
-            const next = [...prev];
-            next[j] = t;
-            return next;
-          }
-          return prev;
+          const cutoff = (Date.now() - STATS_WINDOW_MS) * 1_000_000;
+          const filtered = prev.filter(tr => tr.started_at >= cutoff);
+          return [...filtered, t];
         });
         setHasData(true);
         break;
@@ -375,11 +365,22 @@ export default function App() {
     setDemoMode(false);
     setHasData(false);
     setCompletedTraces([]);
-    setTotalTracesSeen(0);
-    totalTracesSeenRef.current = 0;
     demoCleanupRef.current?.();
     demoCleanupRef.current = null;
     setWsConnected(wsConnectedRef.current);
+  }, []);
+
+  // ── Periodic pruning of stats traces outside the rolling window ──────────────
+  useEffect(() => {
+    const id = setInterval(() => {
+      setCompletedTraces(prev => {
+        if (!prev.length) return prev;
+        const cutoff = (Date.now() - STATS_WINDOW_MS) * 1_000_000;
+        const next = prev.filter(t => t.started_at >= cutoff);
+        return next.length === prev.length ? prev : next;
+      });
+    }, 60_000);
+    return () => clearInterval(id);
   }, []);
 
   // ── Node selection ────────────────────────────────────────────────────────────
@@ -486,7 +487,7 @@ export default function App() {
         onSelectionHighlightChange={handleSelectionHighlight}
       />
 
-      <StatisticsView traces={completedTraces} totalSeen={totalTracesSeen} />
+      <StatisticsView traces={completedTraces} totalSeen={completedTraces.length} />
 
       <HideRulesDialog
         open={showHideRules}
