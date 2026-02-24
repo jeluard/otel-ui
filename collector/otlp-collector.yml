@@ -1,0 +1,31 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+exporters:
+  # Forward to our custom Rust WebSocket backend
+  otlp/traces-ui:
+    endpoint: "traces-backend:4317"
+    tls:
+      insecure: true
+
+processors:
+  batch:
+    timeout: 200ms
+    send_batch_size: 100
+
+extensions:
+  health_check:
+    endpoint: "0.0.0.0:13133"
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/traces-ui]

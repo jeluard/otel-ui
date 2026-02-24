@@ -1,0 +1,31 @@
+# ── Bridge image: Rust backend only (no frontend) ────────────────────────────
+# This image is the "local bridge" used when the frontend is hosted externally
+# (e.g. GitHub Pages). It receives OTLP spans and exposes a WebSocket for the UI.
+#
+# Usage:
+#   docker run --rm -p 4317:4317 -p 8080:8080 ghcr.io/OWNER/otel-ui-bridge:latest
+
+FROM rust:latest AS builder
+
+RUN apt-get update && apt-get install -y \
+    protobuf-compiler \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY backend/ ./
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /build/target/release/otel-ui-backend /app/otel-ui-backend
+
+EXPOSE 4317 8080
+
+ENV RUST_LOG=otel_ui_backend=info
+
+CMD ["/app/otel-ui-backend", "--http-addr", "0.0.0.0:8080"]
