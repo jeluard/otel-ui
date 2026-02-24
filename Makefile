@@ -101,6 +101,10 @@ e2e: build-frontend ## Build frontend then run Playwright e2e tests
 docker-build: ## Build the bridge Docker image locally
 	docker build -f Dockerfile.bridge -t ghcr.io/$(GHCR_USER)/otel-ui-bridge:$(BRIDGE_TAG) .
 
+.PHONY: docker-run
+docker-run: ## Run the bridge image locally  (-p 4317 OTLP gRPC, -p 8080 WS)
+	docker run --rm -p 4317:4317 -p 8080:8080 ghcr.io/$(GHCR_USER)/otel-ui-bridge:$(BRIDGE_TAG)
+
 .PHONY: docker-push
 docker-push: docker-build ## Build and push the bridge image to ghcr.io  (requires: docker login ghcr.io)
 	docker push ghcr.io/$(GHCR_USER)/otel-ui-bridge:$(BRIDGE_TAG)
