@@ -49,6 +49,33 @@ if (dev) {
   const ctx = await esbuild.context(buildOptions);
   await ctx.watch();
 
+  // Watch public folder for CSS/HTML/JS changes
+  const fs = await import('fs');
+  fs.watch('public', { recursive: true }, async (eventType, filename) => {
+    if (filename && (filename.endsWith('.css') || filename.endsWith('.html') || filename.endsWith('.js'))) {
+      console.log(`  ↻ Detected change: ${filename}`);
+      try {
+        await cp('public', 'dist', { recursive: true, force: true });
+        console.log(`  ✓ Copied updated assets to dist/`);
+      } catch (err) {
+        console.error(`  ✗ Failed to copy assets:`, err.message);
+      }
+    }
+  });
+
+  // Watch root index.html
+  fs.watch('index.html', { recursive: false }, async (eventType, filename) => {
+    if (filename === 'index.html' || !filename) {
+      console.log(`  ↻ Detected change: index.html`);
+      try {
+        await cp('index.html', 'dist/index.html');
+        console.log(`  ✓ Copied updated index.html to dist/`);
+      } catch (err) {
+        console.error(`  ✗ Failed to copy index.html:`, err.message);
+      }
+    }
+  });
+
   const devPort = parseInt(process.env.FRONTEND_DEV_PORT ?? '8080', 10);
   const { host, port } = await ctx.serve({
     servedir: 'dist',

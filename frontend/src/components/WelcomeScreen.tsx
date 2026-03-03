@@ -1,6 +1,7 @@
 // ── WelcomeScreen: shown before any data arrives ──────────────────────────────
 
 import React from 'react';
+import type { HistoryPlayback } from '../hooks/useHistoryPlayback.ts';
 
 declare const __BRIDGE_IMAGE__: string;
 
@@ -9,11 +10,13 @@ interface WelcomeScreenProps {
   demoMode: boolean;
   hasData: boolean;
   onEnterDemo: () => void;
+  historyPlayback?: HistoryPlayback;
 }
 
-export default function WelcomeScreen({ wsConnected, demoMode, hasData, onEnterDemo }: WelcomeScreenProps) {
-  if (demoMode || hasData) return null;
+export default function WelcomeScreen({ wsConnected, demoMode, hasData, onEnterDemo, historyPlayback }: WelcomeScreenProps) {
+  if (demoMode || hasData || historyPlayback?.historyEnabled) return null;
 
+  const hasHistoryData = historyPlayback && historyPlayback.bounds && historyPlayback.bounds.count > 0;
   const statusColor = wsConnected ? 'var(--c-ok)' : 'var(--c-error)';
   const statusLabel = wsConnected ? 'live' : 'connecting\u2026';
 
@@ -54,6 +57,17 @@ export default function WelcomeScreen({ wsConnected, demoMode, hasData, onEnterD
           <div className="welcome-step" style={{ marginTop: 8, color: 'rgba(255,255,255,0.4)', fontSize: 11 }}>
             gRPC :4317 · HTTP :4318 · WS ws://localhost:8080
           </div>
+          {hasHistoryData && (
+            <>
+              <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', margin: '12px 0' }} />
+              <div className="welcome-step" style={{ marginTop: 8 }}>
+                Or browse previously recorded traces:
+              </div>
+              <button id="history-mode-btn" onClick={() => historyPlayback?.toggleHistory()}>
+                ▶ Browse History ({historyPlayback?.bounds?.count} traces)
+              </button>
+            </>
+          )}
         </div>
 
         <div className="welcome-divider">or</div>

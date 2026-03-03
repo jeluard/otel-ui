@@ -176,6 +176,17 @@ export class Layout {
   /** Force re-lerp on next tick (called externally after e.g. resize). */
   unsettle() { this._settled = false; }
 
+  /** Remove all nodes and reset cached topology state. */
+  clear() {
+    this.nodes.clear();
+    this.lastEdgesHash = '';
+    this.lastNodeCount = -1;
+    this.lastEdgesRef  = null;
+    this.cachedDepths.clear();
+    this.cachedRows.clear();
+    this._settled = false;
+  }
+
   resize(w: number, h: number) {
     this.width  = w;
     this.height = h;

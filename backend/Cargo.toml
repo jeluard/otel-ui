@@ -38,4 +38,5 @@ chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 hex = "0.4"
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
+rusqlite = { version = "0.32", features = ["bundled"] }

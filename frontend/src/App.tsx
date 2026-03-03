@@ -15,6 +15,7 @@ import { edgeWouldCreateCycle } from './core/graph.ts';
 import { loadDefaultFilters, hiddenRules, isSpanHidden } from './panels/hide-rules.ts';
 import { startDemo }       from './core/demo.ts';
 import { useWebSocket }    from './hooks/useWebSocket.ts';
+import { useHistoryPlayback } from './hooks/useHistoryPlayback.ts';
 import type { SpanEvent, WsMessage, Edge, Node, SpanArrivedPayload, TraceComplete } from './core/types.ts';
 
 import Header          from './components/Header.tsx';
@@ -89,6 +90,36 @@ export default function App() {
   const [spansFlashing,    setSpansFlashing]    = useState(false);
   const [showHideRules,    setShowHideRules]    = useState(false);
   const [completedTraces,  setCompletedTraces]  = useState<TraceComplete[]>([]);
+
+  // ── History playback ───────────────────────────────────────────────────────
+  const historyPlayback  = useHistoryPlayback(demoMode);
+  const historyEnabledRef = useRef(false);
+  /** Last cursor position processed by the history frame loop. */
+  const histLastCursorRef = useRef(0);
+  useEffect(() => {
+    historyEnabledRef.current = historyPlayback.historyEnabled;
+    if (!historyPlayback.historyEnabled) {
+      // Exiting history: clear transient state and request a fresh live topology
+      // snapshot so the diagram re-syncs with live data.
+      // NOTE: we do NOT call st.layout.clear() here — layout.upsert() inside the
+      // topology_snapshot handler already removes stale nodes, so pre-clearing would
+      // leave the canvas blank between the clear and the server response.
+      histLastCursorRef.current = 0;
+      setCompletedTraces([]);
+      const st = sharedRef.current;
+      st.renderer.clearActivity();
+      st.serverEdges     = [];
+      st.clientEdgeMap   = new Map();
+      st.edges           = [];
+      st.spanQueue       = [];
+      st.nodeSpans       = new Map();
+      st.inFlightSpans   = new Map();
+      st.spanVisibleNode = new Map();
+      st.activeExpiry    = new Map();
+      wsSend('topology');
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyPlayback.historyEnabled]);
 
   // ── Mutable shared state (NOT React state — avoids re-renders) ─────────────
   const sharedRef = useRef<SharedState>({
@@ -241,9 +272,131 @@ export default function App() {
     }
   }, [rebuildMergedEdges, recordNodeSpan, flashSpanDot]);
 
-  // ── WS message handler ──────────────────────────────────────────────────────
+  // ── History utilities ───────────────────────────────────────────────────────
+
+  /** Reconstruct a wire-format SpanArrivedPayload from a full SpanEvent. */
+  const spanToArrivedPayload = useCallback((
+    span: SpanEvent,
+    spanById: Map<string, SpanEvent>,
+  ): SpanArrivedPayload => {
+    const nodeId = `${span.target}::${span.name}`;
+    const parent = span.parent_span_id ? spanById.get(span.parent_span_id) : undefined;
+    const fromNode = parent ? `${parent.target}::${parent.name}` : null;
+    const edgeLatencyMs = parent
+      ? (span.start_time_unix_nano - parent.start_time_unix_nano) / 1_000_000
+      : null;
+    return {
+      trace_id:             span.trace_id,
+      span_id:              span.span_id,
+      parent_span_id:       span.parent_span_id,
+      name:                 span.name,
+      target:               span.target,
+      start_time_unix_nano: span.start_time_unix_nano,
+      end_time_unix_nano:   span.end_time_unix_nano,
+      duration_ms:          span.duration_ms,
+      status:               span.status,
+      service_name:         span.service_name,
+      from_node:            (fromNode && fromNode !== nodeId) ? fromNode : null,
+      to_node:              nodeId,
+      edge_latency_ms:      (edgeLatencyMs != null && edgeLatencyMs >= 0) ? edgeLatencyMs : null,
+    };
+  }, []);
+
+  // When history traces are loaded, reset the shared state and inject synthetic topology.
+  const prevHistoryTracesRef = useRef<TraceComplete[]>([]);
+  useEffect(() => {
+    const traces = historyPlayback.traces;
+    if (traces === prevHistoryTracesRef.current) return;
+    prevHistoryTracesRef.current = traces;
+    if (!historyPlayback.historyEnabled || traces.length === 0) return;
+
+    // Reset live shared state (clear layout, spans, animations)
+    const st = sharedRef.current;
+    st.layout.clear();
+    st.serverEdges      = [];
+    st.clientEdgeMap    = new Map();
+    st.edges            = [];
+    st.spanQueue        = [];
+    st.nodeSpans        = new Map();
+    st.inFlightSpans    = new Map();
+    st.spanVisibleNode  = new Map();
+    st.activeExpiry     = new Map();
+    st.traceHL          = null;
+    st.selectionHL      = null;
+    st.renderer.clearActivity();
+
+    // Build topology from all loaded traces
+    const nodeMap = new Map<string, Node>();
+    const edgeMap = new Map<string, Edge>();
+    for (const trace of traces) {
+      const spanById = new Map<string, SpanEvent>(trace.spans.map(s => [s.span_id, s]));
+      for (const span of trace.spans) {
+        const nodeId = `${span.target}::${span.name}`;
+        const n = nodeMap.get(nodeId);
+        if (n) { n.span_count++; }
+        else { nodeMap.set(nodeId, { id: nodeId, label: span.name, category: span.target, span_count: 1 }); }
+        if (span.parent_span_id) {
+          const parent = spanById.get(span.parent_span_id);
+          if (parent) {
+            const parentId = `${parent.target}::${parent.name}`;
+            if (parentId !== nodeId) {
+              const ek = `${parentId}=>${nodeId}`;
+              const e = edgeMap.get(ek);
+              if (e) { e.flow_count++; }
+              else { edgeMap.set(ek, { source: parentId, target: nodeId, flow_count: 1 }); }
+            }
+          }
+        }
+      }
+    }
+
+    // Inject as a synthetic topology_snapshot (apply topology directly,
+    // bypassing the live-message muting check in handleMessage)
+    const nodes = Array.from(nodeMap.values());
+    const edges = Array.from(edgeMap.values());
+    {
+      const hiddenIds    = new Set(nodes.filter(n => isSpanHidden({ name: n.id, target: n.category })).map(n => n.id));
+      const visibleNodes = nodes.filter(n => !hiddenIds.has(n.id));
+      const parentOf     = new Map<string, string>();
+      for (const e of edges) if (!parentOf.has(e.target)) parentOf.set(e.target, e.source);
+      const nearestVisibleAncestor = (id: string): string | null => {
+        let cur = parentOf.get(id);
+        while (cur !== undefined) { if (!hiddenIds.has(cur)) return cur; cur = parentOf.get(cur); }
+        return null;
+      };
+      const reWiredEdges: Edge[] = [];
+      const edgeSet = new Set<string>();
+      for (const e of edges) {
+        if (hiddenIds.has(e.target)) continue;
+        const effectiveSrc = hiddenIds.has(e.source) ? nearestVisibleAncestor(e.source) : e.source;
+        if (!effectiveSrc || effectiveSrc === e.target) continue;
+        const key = `${effectiveSrc}=>${e.target}`;
+        if (!edgeSet.has(key)) { edgeSet.add(key); reWiredEdges.push({ source: effectiveSrc, target: e.target, flow_count: e.flow_count }); }
+      }
+      st.layout.upsert(visibleNodes);
+      st.serverEdges = reWiredEdges;
+      for (const e of reWiredEdges) st.clientEdgeMap.delete(`${e.source}=>${e.target}`);
+      rebuildMergedEdges();
+      for (const n of visibleNodes) targetColor(n.category);
+    }
+
+    // Topology built — start cursor before all traces so playback drives data population
+    setHasData(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyPlayback.traces, historyPlayback.historyEnabled]);
+
   const handleMessage = useCallback((msg: WsMessage) => {
     const st = sharedRef.current;
+
+    // While in history mode, ignore live topology/span updates to avoid
+    // polluting the history view. WS stays connected so we can resume live
+    // instantly when the user toggles history off.
+    if (historyEnabledRef.current) {
+      if (msg.type === 'topology_snapshot' || msg.type === 'topology_updated' ||
+          msg.type === 'spans_batch' || msg.type === 'trace_completed') {
+        return;
+      }
+    }
 
     switch (msg.type) {
       case 'topology_snapshot':
@@ -316,7 +469,7 @@ export default function App() {
   }, []);
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
-  useWebSocket({ url: WS_URL, onMessage: handleMessage, onStatus: handleStatus });
+  const { sendMessage: wsSend } = useWebSocket({ url: WS_URL, onMessage: handleMessage, onStatus: handleStatus });
 
   // ── rAF frame loop (span queue drain + rate metrics) ───────────────────────
   useEffect(() => {
@@ -325,8 +478,8 @@ export default function App() {
       rafId = requestAnimationFrame(frame);
       const st = sharedRef.current;
 
-      // Drain span queue (max 200/frame)
-      if (st.spanQueue.length > 0) {
+      // Drain span queue (max 200/frame) — skip in history mode
+      if (!historyEnabledRef.current && st.spanQueue.length > 0) {
         const pending = st.spanQueue.splice(0, Math.min(st.spanQueue.length, 200));
         pending.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
         const minNs   = pending.reduce((m, s) => Math.min(m, s.start_time_unix_nano), Infinity);
@@ -335,6 +488,59 @@ export default function App() {
         for (const m of pending) {
           const staggerMs = ((m.start_time_unix_nano - minNs) / rangeNs) * 300;
           processSpan(m, now + staggerMs);
+        }
+      }
+
+      // History mode: replay traces that the cursor has crossed this frame
+      if (historyEnabledRef.current && historyPlayback.traces.length > 0) {
+        const cursor = historyPlayback.cursorRef.current;
+        const prev   = histLastCursorRef.current;
+        if (cursor !== prev) {
+          const backward = cursor < prev;
+          if (backward) {
+            // Backward seek: wipe all per-trace data and replay from the start
+            setCompletedTraces([]);
+            spansViewRef.current?.clear();
+            tracesPanelRef.current?.clear();
+            st.renderer.clearActivity();
+            st.inFlightSpans   = new Map();
+            st.spanVisibleNode = new Map();
+            st.activeExpiry    = new Map();
+          }
+          const fromNs = backward ? historyPlayback.range.from - 1 : prev;
+          const newlyVisible: TraceComplete[] = [];
+          for (const trace of historyPlayback.traces) {
+            if (trace.started_at > fromNs && trace.started_at <= cursor) {
+              const spanById = new Map<string, SpanEvent>(trace.spans.map(s => [s.span_id, s]));
+              const sorted = [...trace.spans].sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+              for (const span of sorted) processSpan(spanToArrivedPayload(span, spanById), now);
+              st.inFlightSpans.delete(trace.trace_id);
+              for (const s of trace.spans) st.spanVisibleNode.delete(s.span_id);
+              spansViewRef.current?.enrich(trace.spans);
+              tracesPanelRef.current?.onTraceCompleted(trace, activeTabRef.current);
+              newlyVisible.push(trace);
+              st.tracesThisSecond++;
+            }
+          }
+          if (backward) {
+            setCompletedTraces(newlyVisible);
+          } else if (newlyVisible.length > 0) {
+            setCompletedTraces(prevTraces => [...prevTraces, ...newlyVisible]);
+          }
+          // Pin the current cursor trace so its nodes/edges stay lit in the diagram
+          const cursorTrace = historyPlayback.traces[historyPlayback.cursorIndexRef.current];
+          if (cursorTrace) {
+            const spanById = new Map<string, SpanEvent>(cursorTrace.spans.map(s => [s.span_id, s]));
+            const nodeIds  = new Set<string>();
+            const edgeKeys = new Set<string>();
+            for (const span of cursorTrace.spans) {
+              const p = spanToArrivedPayload(span, spanById);
+              nodeIds.add(p.to_node);
+              if (p.from_node && p.from_node !== p.to_node) edgeKeys.add(`${p.from_node}=>${p.to_node}`);
+            }
+            st.renderer.pinTrace(nodeIds, edgeKeys);
+          }
+          histLastCursorRef.current = cursor;
         }
       }
 
@@ -349,7 +555,7 @@ export default function App() {
     };
     rafId = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(rafId);
-  }, [processSpan]);
+  }, [processSpan, historyPlayback]);
 
   // ── Demo mode ────────────────────────────────────────────────────────────────
   const activateDemo = useCallback(() => {
@@ -373,6 +579,7 @@ export default function App() {
   // ── Periodic pruning of stats traces outside the rolling window ──────────────
   useEffect(() => {
     const id = setInterval(() => {
+      if (historyEnabledRef.current) return; // don't prune in history mode
       setCompletedTraces(prev => {
         if (!prev.length) return prev;
         const cutoff = (Date.now() - STATS_WINDOW_MS) * 1_000_000;
@@ -444,6 +651,7 @@ export default function App() {
         tps={tps}
         spansFlashing={spansFlashing}
         onOpenFilters={() => setShowHideRules(true)}
+        historyPlayback={historyPlayback}
       />
 
       <WelcomeScreen
@@ -451,6 +659,7 @@ export default function App() {
         demoMode={demoMode}
         hasData={hasData}
         onEnterDemo={activateDemo}
+        historyPlayback={historyPlayback}
       />
 
       <DiagramView

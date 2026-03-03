@@ -263,6 +263,20 @@ export class TracesTable {
 
   clearUnread(): void {}
 
+  /** Reset all spans — used when history playback moves backward. */
+  clear(): void {
+    this.allSpans    = [];
+    this.pending     = [];
+    this.rowCount    = 0;
+    this.totalSeen   = 0;
+    this.scheduled   = false;
+    this.selectedRow = null;
+    this.tbody.textContent = '';
+    this.emptyEl.style.display = '';
+    this.countEl.textContent   = '0 spans';
+    this.detailPanel.style.display = 'none';
+  }
+
   /** Back-fill attributes (and other fields) from a completed trace into any
    * already-stored spans that were added via SpanArrivedPayload (which carries
    * no attributes). This makes the detail panel show full span fields. */

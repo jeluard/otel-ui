@@ -5,6 +5,12 @@ import type { WsMessage, Node, SpanEvent, Edge, TraceComplete } from './types.ts
 const SERVICE_TYPES = ['api', 'auth', 'database', 'cache', 'queue', 'worker'] as const;
 type ServiceType = (typeof SERVICE_TYPES)[number];
 
+// Strict tier ordering — children must come from a deeper tier so span-derived
+// edges always go forward and the history topology forms a proper DAG.
+const SERVICE_TIER: Record<ServiceType, number> = {
+  api: 0, auth: 1, queue: 1, database: 2, cache: 2, worker: 3,
+};
+
 const DEMO_SPANS: Record<ServiceType, string[]> = {
   api:      ['receive_request', 'validate_token', 'route_handler', 'send_response'],
   auth:     ['verify_token', 'check_permissions', 'log_access'],
@@ -49,9 +55,9 @@ function buildInstances(numTiers: number): ServiceInstance[][] {
   return tiers;
 }
 
-function generateTrace(traceId: string): TraceComplete {
+function generateTrace(traceId: string, startNs?: number, tiered = false): TraceComplete {
   const spans: SpanEvent[] = [];
-  const traceStartNano = Date.now() * 1e6;
+  const traceStartNano = startNs ?? Date.now() * 1e6;
   // ~10% outlier traces to populate higher latency buckets in the heatmap
   const isOutlier = Math.random() < 0.10;
   const totalDurationNs = isOutlier
@@ -75,7 +81,7 @@ function generateTrace(traceId: string): TraceComplete {
       span_id:              spanId,
       trace_id:             traceId,
       parent_span_id:       parentId,
-      target:               `${type}::${spanName}`,
+      target:               instanceId,
       name:                 spanName,
       start_time_unix_nano: startNs,
       end_time_unix_nano:   startNs + durationNs,
@@ -101,7 +107,13 @@ function generateTrace(traceId: string): TraceComplete {
     const totalW    = weights.reduce((a, b) => a + b, 0);
     let cursor = startNs + PAD_NS;
 
-    const others = demoInstances.filter(i => i.id !== instanceId);
+    // In tiered mode children must come from a strictly deeper tier so edges
+    // always go forward — this guarantees a DAG with clear BFS roots.
+    const myTier = SERVICE_TIER[type] ?? 0;
+    const others = tiered
+      ? demoInstances.filter(i => (SERVICE_TIER[i.type] ?? 0) > myTier)
+      : demoInstances.filter(i => i.id !== instanceId);
+    if (others.length === 0) return; // no deeper tier available
     for (let i = 0; i < childCount; i++) {
       const childDuration = Math.max(800_000, Math.floor((weights[i] / totalW) * budget));
       const childInst     = randomChoice(others);
@@ -200,6 +212,19 @@ function toSpansBatch(spans: SpanEvent[]): WsMessage {
     edge_latency_ms:      null,
   }));
   return { type: 'spans_batch', spans: payloads };
+}
+
+/**
+ * Generate demo traces distributed across [from_ns, to_ns] for history mode.
+ */
+export function generateDemoHistoryTraces(from_ns: number, to_ns: number, count: number): TraceComplete[] {
+  const span = Math.max(1, to_ns - from_ns);
+  const traces: TraceComplete[] = [];
+  for (let i = 0; i < count; i++) {
+    const startNs = from_ns + Math.floor(Math.random() * span);
+    traces.push(generateTrace(randomId('trace_'), startNs, true));
+  }
+  return traces.sort((a, b) => a.started_at - b.started_at);
 }
 
 /**

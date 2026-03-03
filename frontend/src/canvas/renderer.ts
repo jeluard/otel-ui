@@ -81,6 +81,9 @@ export class Renderer {
   private nodeHits:        Map<string, number[]>          = new Map();
   /** cached per-node spans/s rate (avoids filter() every frame per node) */
   private nodeRateCache:   Map<string, { rate: number; expiry: number }> = new Map();
+  /** Nodes/edges pinned as permanently active (history cursor trace). */
+  private pinnedNodes = new Set<string>();
+  private pinnedEdges = new Set<string>();
 
   /** Cached column-guide entries; invalidated when topology changes. */
   private cachedGuides: Array<{ depth: number; cx: number }> = [];
@@ -102,6 +105,23 @@ export class Renderer {
       if (ea.pulses.length > 0 && (now - ea.pulses[ea.pulses.length - 1].startTime) < ea.pulses[ea.pulses.length - 1].duration + 600) return true;
     }
     return false;
+  }
+
+  /** Remove all transient state (edge pulses, node ripples, hit histories). */
+  clearActivity() {
+    this.edgeActivity.clear();
+    this.nodeRipples.clear();
+    this.nodeHits.clear();
+    this.nodeRateCache.clear();
+    this.pinnedNodes.clear();
+    this.pinnedEdges.clear();
+    this.invalidateGuides();
+  }
+
+  /** Pin a trace's nodes/edges as permanently active (replaces previous pin). */
+  pinTrace(nodeIds: Iterable<string>, edgeKeys: Iterable<string>) {
+    this.pinnedNodes = new Set(nodeIds);
+    this.pinnedEdges = new Set(edgeKeys);
   }
 
   // ── Public mutators ────────────────────────────────────────────────────────
@@ -316,11 +336,11 @@ export class Renderer {
       ctx.restore();
       for (const node of nodes.values()) {
         if (!highlightNodes!.has(node.id)) continue;
-        this._drawNode(ctx, node, hoveredId === node.id, (activeExpiry.get(node.id) ?? 0) > time, time, false, node.id === selectedId);
+        this._drawNode(ctx, node, hoveredId === node.id, (activeExpiry.get(node.id) ?? 0) > time || this.pinnedNodes.has(node.id), time, false, node.id === selectedId);
       }
     } else {
       for (const node of nodes.values()) {
-        this._drawNode(ctx, node, hoveredId === node.id, (activeExpiry.get(node.id) ?? 0) > time, time, false, node.id === selectedId);
+        this._drawNode(ctx, node, hoveredId === node.id, (activeExpiry.get(node.id) ?? 0) > time || this.pinnedNodes.has(node.id), time, false, node.id === selectedId);
       }
     }
   }
@@ -349,7 +369,7 @@ export class Renderer {
   ) {
     const key      = `${edge.source}=>${edge.target}`;
     const activity = this.edgeActivity.get(key);
-    const age      = activity ? (time - activity.lastActive) / 2000 : 1;
+    const age      = this.pinnedEdges.has(key) ? 0 : activity ? (time - activity.lastActive) / 2000 : 1;
     // Cached rate (stale ≤500ms); refresh lazily to avoid filter() every frame
     let rate = 0;
     if (activity) {

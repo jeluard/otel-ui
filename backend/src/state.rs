@@ -6,6 +6,8 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
+use crate::db::Db;
+
 /// A node/component discovered from spans (keyed by the `target` field of a span).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
@@ -123,10 +125,12 @@ pub struct AppState {
     pub span_start_index: DashMap<String, u64>,
     /// Last time (ms) topology was broadcast, for ≥500 ms throttle
     last_topo_ms: std::sync::atomic::AtomicU64,
+    /// Optional SQLite persistence layer.
+    pub db: Arc<Db>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(db: Arc<Db>) -> Self {
         let (tx, _): (broadcast::Sender<Arc<String>>, _) = broadcast::channel(4096);
         Self {
             broadcast: tx,
@@ -138,6 +142,7 @@ impl AppState {
             span_name_index: DashMap::new(),
             span_start_index: DashMap::new(),
             last_topo_ms: std::sync::atomic::AtomicU64::new(0),
+            db,
         }
     }
 
@@ -274,6 +279,22 @@ impl AppState {
                 duration_ms,
                 started_at,
             };
+
+            // Persist trace to SQLite asynchronously (non-blocking path).
+            {
+                let db = Arc::clone(&self.db);
+                let trace_for_db = trace.clone();
+                let service_name = trace.spans
+                    .iter()
+                    .find(|s| s.parent_span_id.is_none())
+                    .map(|s| s.service_name.clone())
+                    .unwrap_or_default();
+                tokio::spawn(async move {
+                    if let Err(e) = tokio::task::spawn_blocking(move || db.insert_trace(&trace_for_db, &service_name)).await {
+                        tracing::error!("Failed to persist trace: {}", e);
+                    }
+                });
+            }
 
             let _ = self.broadcast.send(Arc::new(
                 serde_json::to_string(&WsMessage::TraceCompleted { trace }).unwrap_or_default()

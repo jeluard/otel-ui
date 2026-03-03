@@ -6,13 +6,15 @@ use std::time::Duration;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        Query, State,
     },
+    http::StatusCode,
     response::IntoResponse,
     routing::get,
-    Router,
+    Json, Router,
 };
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use tokio::time::interval;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, info};
@@ -31,6 +33,8 @@ pub async fn run_http_server(state: SharedState, bind: &str) -> anyhow::Result<(
         .route("/ws", get(ws_handler))
         .route("/health", get(health_handler))
         .route("/config", get(config_handler))
+        .route("/api/traces", get(traces_handler))
+        .route("/api/traces/bounds", get(traces_bounds_handler))
         .layer(cors)
         .with_state(state);
 
@@ -51,6 +55,68 @@ async fn config_handler(
 ) -> impl IntoResponse {
     use axum::http::{header, StatusCode};
     (StatusCode::OK, [(header::CONTENT_TYPE, "application/json")], (*state.get_config_json()).clone())
+}
+
+// ── History API ────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct TraceQueryParams {
+    from: i64,
+    to: i64,
+    limit: Option<usize>,
+    service: Option<String>,
+    min_duration_ms: Option<f64>,
+    max_duration_ms: Option<f64>,
+}
+
+async fn traces_handler(
+    State(state): State<SharedState>,
+    Query(params): Query<TraceQueryParams>,
+) -> impl IntoResponse {
+    let db = Arc::clone(&state.db);
+    let limit = params.limit.unwrap_or(2000);
+    let service = params.service.clone();
+    let min_dur = params.min_duration_ms;
+    let max_dur = params.max_duration_ms;
+    match tokio::task::spawn_blocking(move || {
+        db.query_traces(
+            params.from,
+            params.to,
+            limit,
+            service.as_deref(),
+            min_dur,
+            max_dur,
+        )
+    })
+    .await
+    {
+        Ok(Ok(traces)) => Json(traces).into_response(),
+        Ok(Err(e)) => {
+            tracing::error!("DB query error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            tracing::error!("Task join error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn traces_bounds_handler(
+    State(state): State<SharedState>,
+) -> impl IntoResponse {
+    let db = Arc::clone(&state.db);
+    match tokio::task::spawn_blocking(move || db.get_bounds()).await {
+        Ok(Ok(bounds)) => Json(bounds).into_response(),
+        Ok(Err(e)) => {
+            tracing::error!("DB bounds error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            tracing::error!("Task join error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 async fn ws_handler(

@@ -57,3 +57,9 @@ export type WsMessage =
   | { type: 'trace_completed'; trace: TraceComplete }
   | { type: 'topology_updated'; nodes: Node[]; edges: Edge[] }
   | { type: 'stats'; total_traces: number; spans_per_second: number; active_nodes: number; timestamp: number };
+
+export interface TraceBounds {
+  min_started_at: number;
+  max_started_at: number;
+  count: number;
+}

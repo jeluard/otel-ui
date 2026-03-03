@@ -110,6 +110,20 @@ docker-push: docker-build ## Build and push the bridge image to ghcr.io  (requir
 	docker push ghcr.io/$(GHCR_USER)/otel-ui-bridge:$(BRIDGE_TAG)
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Database utilities
+# ══════════════════════════════════════════════════════════════════════════════
+
+## Path to the SQLite trace database (override with DB_PATH=...)
+DB_PATH          ?= ./otel-ui.db
+## Retention override (default: uses --db-retention-days default of 7 days)
+DB_RETENTION_DAYS ?= 7
+
+.PHONY: prune-db
+prune-db: ## Prune traces older than DB_RETENTION_DAYS (default 7) from the SQLite database
+	cd backend && OTEL_UI_DB_PATH=$(DB_PATH) OTEL_UI_DB_RETENTION_DAYS=$(DB_RETENTION_DAYS) \
+		cargo run -- --prune
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Cleanup
 # ══════════════════════════════════════════════════════════════════════════════
 

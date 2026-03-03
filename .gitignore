@@ -2,3 +2,6 @@
 **/dist/
 **/target/
 **/test-results/
+*.db
+*.db-wal
+*.db-shm

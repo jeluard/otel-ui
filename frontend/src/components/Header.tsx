@@ -1,7 +1,10 @@
 // ── Header: top navigation bar ───────────────────────────────────────────────
 
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { TabId } from '../App.tsx';
+import type { HistoryPlayback } from '../hooks/useHistoryPlayback.ts';
+import HistoryControls     from './HistoryControls.tsx';
+import HistoryConfigDialog from './HistoryConfigDialog.tsx';
 
 interface HeaderProps {
   activeTab: TabId;
@@ -13,6 +16,7 @@ interface HeaderProps {
   tps: number;
   spansFlashing: boolean;
   onOpenFilters: () => void;
+  historyPlayback: HistoryPlayback;
 }
 
 export default function Header({
@@ -25,9 +29,22 @@ export default function Header({
   tps,
   spansFlashing,
   onOpenFilters,
+  historyPlayback,
 }: HeaderProps) {
-  const statusColor = demoMode ? '#64c8ff' : wsConnected ? 'var(--c-ok)' : 'var(--c-error)';
-  const statusLabel = demoMode ? 'demo' : wsConnected ? 'live' : 'reconnecting\u2026';
+  const { historyEnabled, toggleHistory } = historyPlayback;
+  const [showHistoryConfig, setShowHistoryConfig] = useState(false);
+  const historyEnabledRef = useRef(historyEnabled);
+
+  // Auto-open config dialog when entering history mode
+  useEffect(() => {
+    if (historyEnabled && !historyEnabledRef.current) {
+      setShowHistoryConfig(true);
+    }
+    historyEnabledRef.current = historyEnabled;
+  }, [historyEnabled]);
+
+  const statusColor = demoMode ? '#64c8ff' : historyEnabled ? 'var(--c-amber)' : wsConnected ? 'var(--c-ok)' : 'var(--c-error)';
+  const statusLabel = demoMode ? 'demo' : historyEnabled ? 'history' : wsConnected ? 'live' : 'reconnecting\u2026';
   const statusShadow = `0 0 8px ${statusColor}`;
 
   return (
@@ -38,7 +55,9 @@ export default function Header({
           <div className="logo-text">OTel UI</div>
         </div>
       </div>
-      <div className="logo-sub">Live Trace Diagram</div>
+      <div className="logo-sub">
+        {historyEnabled ? 'History Mode' : 'Live Trace Diagram'}
+      </div>
       <div className="header-spacer" />
 
       <div id="header-metrics">
@@ -68,6 +87,15 @@ export default function Header({
           <button onClick={onExitDemo}>Exit</button>
         </div>
       )}
+
+      <label id="history-toggle" title="Browse historical traces from the database">
+        <input
+          type="checkbox"
+          checked={historyEnabled}
+          onChange={toggleHistory}
+        />
+        History
+      </label>
 
       <button id="hide-rules-btn" title="Manage hidden spans" onClick={onOpenFilters}>
         <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -125,6 +153,14 @@ export default function Header({
           Stats
         </button>
       </div>
+      {historyEnabled && <HistoryControls hp={historyPlayback} onOpenConfig={() => setShowHistoryConfig(true)} />}
+      {historyEnabled && (
+        <HistoryConfigDialog
+          open={showHistoryConfig}
+          onClose={() => setShowHistoryConfig(false)}
+          hp={historyPlayback}
+        />
+      )}
     </header>
   );
 }

@@ -107,8 +107,10 @@
     #header {
       position: absolute;
       top: 0; left: 0; right: 0;
-      height: 56px;
+      min-height: 56px;
+      height: auto;
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       padding: 0 24px;
       gap: 16px;
@@ -401,6 +403,24 @@
       background: rgba(200,100,100,0.15);
       border-color: rgba(200,100,100,0.45);
       color: #ff9999;
+    }
+
+    #welcome-screen #history-mode-btn {
+      padding: 10px 24px;
+      background: rgba(100,200,255,0.12);
+      border: 1px solid rgba(100,200,255,0.35);
+      color: #64c8ff;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    #welcome-screen #history-mode-btn:hover {
+      background: rgba(100,200,255,0.2);
+      border-color: rgba(100,200,255,0.6);
     }
 
     #welcome-screen #demo-mode-hint {
@@ -832,6 +852,420 @@
       margin-right: 8px;
     }
     #hide-rules-btn:hover { background: rgba(99,102,241,0.22); border-color: rgba(99,102,241,0.4); }
+
+    /* ── History toggle ── */
+    #history-toggle {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--c-amber);
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+    #history-toggle input[type=checkbox] {
+      accent-color: var(--c-amber);
+      cursor: pointer;
+    }
+
+    /* ── History controls bar ── */
+    #history-controls {
+      width: 100%;
+      padding: 6px 0 8px;
+      border-top: 1px solid rgba(245,158,11,0.15);
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .hc-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .hc-summary-row { min-height: 22px; }
+    .hc-playback-row { min-height: 22px; }
+    .hc-label {
+      font-size: 10px;
+      color: var(--c-neutral);
+      letter-spacing: 0.06em;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    /* Range summary text */
+    .hc-range-summary {
+      font-size: 11px;
+      color: var(--c-amber);
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .hc-range-sep {
+      color: rgba(245,158,11,0.45);
+      font-size: 10px;
+    }
+    .hc-range-empty {
+      color: var(--c-neutral);
+      font-style: italic;
+    }
+    /* Filter chips */
+    .hc-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      background: rgba(245,158,11,0.10);
+      border: 1px solid rgba(245,158,11,0.25);
+      border-radius: 10px;
+      color: var(--c-amber);
+      padding: 1px 6px 1px 7px;
+      white-space: nowrap;
+    }
+    .hc-chip-remove {
+      background: none;
+      border: none;
+      color: rgba(245,158,11,0.5);
+      font-size: 11px;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+    }
+    .hc-chip-remove:hover { color: var(--c-amber); }
+    /* Spacer */
+    .hc-spacer { flex: 1; }
+    /* Loading dot */
+    .hc-loading-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--c-amber);
+      opacity: 0.7;
+      animation: hc-pulse 1s ease-in-out infinite;
+    }
+    @keyframes hc-pulse {
+      0%,100% { opacity: 0.3; transform: scale(0.8); }
+      50%      { opacity: 0.9; transform: scale(1.2); }
+    }
+    /* Configure button */
+    .hc-configure-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: rgba(245,158,11,0.10);
+      border: 1px solid rgba(245,158,11,0.25);
+      border-radius: 5px;
+      color: var(--c-amber);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 3px 9px;
+      font-family: 'Inter', system-ui, sans-serif;
+      white-space: nowrap;
+    }
+    .hc-configure-btn:hover { background: rgba(245,158,11,0.20); }
+    .hc-configure-btn-sm { padding: 3px 5px; }
+    /* Quick load button (shown before traces are loaded) */
+    .hc-load-btn {
+      background: rgba(245,158,11,0.10);
+      border: 1px solid rgba(245,158,11,0.25);
+      border-radius: 5px;
+      color: var(--c-amber);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 3px 10px;
+      font-family: 'Inter', system-ui, sans-serif;
+      white-space: nowrap;
+    }
+    .hc-load-btn:hover:not(:disabled) { background: rgba(245,158,11,0.22); }
+    .hc-load-btn:disabled { cursor: not-allowed; color: #334155; background: transparent; border-color: rgba(255,255,255,0.04); }
+    /* Badges */
+    .hc-badge {
+      font-size: 10px;
+      background: rgba(245,158,11,0.15);
+      border: 1px solid rgba(245,158,11,0.3);
+      border-radius: 10px;
+      color: var(--c-amber);
+      padding: 2px 7px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .hc-ctrl-btn {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 5px;
+      color: #94a3b8;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 3px 8px;
+      line-height: 1;
+    }
+    .hc-ctrl-btn:hover:not(:disabled) { background: rgba(255,255,255,0.10); color: #e2e8f0; }
+    .hc-ctrl-btn:disabled,
+    .hc-scrubber:disabled {
+      cursor: not-allowed !important;
+      pointer-events: auto;
+      color: #2d3748 !important;
+      background: transparent !important;
+      border-color: rgba(255,255,255,0.05) !important;
+      box-shadow: none !important;
+    }
+    .hc-play-btn {
+      background: rgba(245,158,11,0.12);
+      border-color: rgba(245,158,11,0.3);
+      color: var(--c-amber);
+      font-size: 13px;
+      padding: 2px 9px;
+    }
+    .hc-play-btn:hover:not(:disabled) { background: rgba(245,158,11,0.22); }
+    .hc-play-btn:disabled {
+      cursor: not-allowed !important;
+      pointer-events: auto;
+      color: #2d3748 !important;
+      background: transparent !important;
+      border-color: rgba(255,255,255,0.05) !important;
+    }
+    .hc-load-btn:disabled {
+      cursor: not-allowed !important;
+      color: #2d3748 !important;
+      background: transparent !important;
+      border-color: rgba(255,255,255,0.05) !important;
+    }
+    .hc-scrubber {
+      flex: 1;
+      min-width: 100px;
+      max-width: 400px;
+      accent-color: var(--c-amber);
+      cursor: pointer;
+    }
+    .hc-cursor-time {
+      font-size: 10px;
+      color: var(--c-subtle);
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+      min-width: 11ch;
+    }
+    /* Speed slider */
+    .hc-speed-slider {
+      width: 80px;
+      accent-color: var(--c-amber);
+      cursor: pointer;
+    }
+    .hc-speed-val {
+      font-size: 10px;
+      color: var(--c-amber);
+      font-family: 'JetBrains Mono', monospace;
+      min-width: 4ch;
+      text-align: right;
+    }
+
+    /* ── History config dialog ─────────────────────────────── */
+    #hist-dialog-overlay {
+      display: flex;
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      background: rgba(0,0,0,0.55);
+      align-items: center;
+      justify-content: center;
+      pointer-events: auto;
+    }
+    #hist-dialog {
+      pointer-events: auto;
+      background: #0f172a;
+      border: 1px solid rgba(245,158,11,0.22);
+      border-radius: 10px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.7), 0 0 0 1px rgba(245,158,11,0.06);
+      width: 480px;
+      max-width: 95vw;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #hist-dialog-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding: 10px 14px 9px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      background: rgba(245,158,11,0.04);
+    }
+    #hist-dialog-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #e2e8f0;
+      font-family: 'Inter', system-ui, sans-serif;
+      letter-spacing: -0.01em;
+    }
+    #hist-dialog-subtitle {
+      font-size: 10px;
+      color: #475569;
+      margin-top: 1px;
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+    #hist-dialog-close {
+      background: none;
+      border: none;
+      color: #475569;
+      font-size: 16px;
+      cursor: pointer;
+      line-height: 1;
+      padding: 2px 5px;
+      margin-top: -2px;
+    }
+    #hist-dialog-close:hover { color: #94a3b8; }
+    #hist-dialog-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 14px 4px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.08) transparent;
+    }
+    .hist-section {
+      padding: 8px 0 6px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .hist-section:last-child { border-bottom: none; }
+    .hist-section-label {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+      color: var(--c-neutral);
+      margin-bottom: 7px;
+    }
+    .hist-range-row {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .hist-field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .hist-field-wide { flex: 1; }
+    .hist-field-label {
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: #475569;
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+    .hist-datetime, .hist-input {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 6px;
+      color: #e2e8f0;
+      font-size: 12px;
+      padding: 5px 8px;
+      font-family: 'JetBrains Mono', monospace;
+      outline: none;
+      box-sizing: border-box;
+    }
+    .hist-datetime { color-scheme: dark; cursor: pointer; }
+    .hist-datetime:focus, .hist-input:focus {
+      border-color: rgba(245,158,11,0.45);
+      background: rgba(245,158,11,0.04);
+    }
+    .hist-input::placeholder { color: #334155; }
+    .hist-input[type="number"] { width: 130px; }
+    /* Presets */
+    .hist-presets {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 7px;
+      flex-wrap: wrap;
+    }
+    .hist-presets-label {
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: #334155;
+      margin-right: 2px;
+    }
+    .hist-preset-btn {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.09);
+      border-radius: 14px;
+      color: #64748b;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 3px 10px;
+      font-family: 'Inter', system-ui, sans-serif;
+      transition: background 0.12s, color 0.12s;
+    }
+    .hist-preset-btn:hover {
+      background: rgba(245,158,11,0.12);
+      border-color: rgba(245,158,11,0.28);
+      color: var(--c-amber);
+    }
+    /* DB hint */
+    .hist-db-hint {
+      font-size: 10px;
+      color: #334155;
+      font-family: 'JetBrains Mono', monospace;
+      margin-top: 5px;
+    }
+    /* Filters grid */
+    .hist-filters-grid {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    /* Dialog footer */
+    #hist-dialog-footer {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 8px 14px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      background: rgba(8,14,28,0.5);
+    }
+    #hist-dialog-cancel {
+      background: none;
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 6px;
+      color: #475569;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 5px 14px;
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+    #hist-dialog-cancel:hover { color: #94a3b8; border-color: rgba(255,255,255,0.20); }
+    #hist-dialog-load {
+      background: rgba(245,158,11,0.15);
+      border: 1px solid rgba(245,158,11,0.35);
+      border-radius: 6px;
+      color: var(--c-amber);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 5px 18px;
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+    #hist-dialog-load:hover:not(:disabled) { background: rgba(245,158,11,0.28); }
+    #hist-dialog-load:disabled {
+      cursor: not-allowed !important;
+      color: #2d3748 !important;
+      background: transparent !important;
+      border-color: rgba(255,255,255,0.05) !important;
+    }
     #hide-dialog-overlay {
       display: flex;
       position: fixed;

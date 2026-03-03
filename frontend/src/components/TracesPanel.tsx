@@ -90,6 +90,8 @@ export interface TracesPanelHandle {
   getTraceHL(): { nodes: Set<string>; edgeKeys: Set<string> } | null;
   /** Look up a span by ID from completed traces (has full attributes). */
   lookupSpan(spanId: string): SpanEvent | undefined;
+  /** Clear all traces — used when history playback seeks backward. */
+  clear(): void;
 }
 
 interface TracesPanelProps {
@@ -169,6 +171,13 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
           if (s) return s;
         }
         return undefined;
+      },
+      clear() {
+        tracesRef.current = [];
+        setTraces([]);
+        setSelectedId(null);
+        tracehlRef.current = null;
+        onTraceHighlightChange(null);
       },
     }));
 

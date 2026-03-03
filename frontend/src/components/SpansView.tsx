@@ -20,6 +20,7 @@ export interface SpansViewHandle {
   add(span: SpanEvent, tabVisible: boolean): void;
   enrich(spans: SpanEvent[]): void;
   clearUnread(): void;
+  clear(): void;
 }
 
 const SpansView = forwardRef<SpansViewHandle, SpansViewProps>(
@@ -60,6 +61,7 @@ const SpansView = forwardRef<SpansViewHandle, SpansViewProps>(
       add:        (span, tabVisible) => tableRef.current?.add(span, tabVisible),
       enrich:     (spans)            => tableRef.current?.enrich(spans),
       clearUnread:()                 => tableRef.current?.clearUnread(),
+      clear:      ()                 => tableRef.current?.clear(),
     }));
 
     return (
