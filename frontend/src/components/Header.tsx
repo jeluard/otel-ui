@@ -5,17 +5,24 @@ import type { TabId } from '../App.tsx';
 import type { HistoryPlayback } from '../hooks/useHistoryPlayback.ts';
 import HistoryControls     from './HistoryControls.tsx';
 import HistoryConfigDialog from './HistoryConfigDialog.tsx';
+import DemoConfigDialog    from './DemoConfigDialog.tsx';
+import type { DemoConfig, DemoScenario } from '../core/demo.ts';
 
 interface HeaderProps {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
   wsConnected: boolean;
   demoMode: boolean;
+  demoScenario: DemoScenario;
   onExitDemo: () => void;
+  demoConfig: DemoConfig;
+  onDemoConfigChange: (c: DemoConfig) => void;
+  onLogoClick: () => void;
   sps: number;
   tps: number;
   spansFlashing: boolean;
   onOpenFilters: () => void;
+  onOpenCorrelationKeySettings: () => void;
   historyPlayback: HistoryPlayback;
 }
 
@@ -24,15 +31,21 @@ export default function Header({
   onTabChange,
   wsConnected,
   demoMode,
+  demoScenario,
   onExitDemo,
+  demoConfig,
+  onDemoConfigChange,
+  onLogoClick,
   sps,
   tps,
   spansFlashing,
   onOpenFilters,
+  onOpenCorrelationKeySettings,
   historyPlayback,
 }: HeaderProps) {
   const { historyEnabled, toggleHistory } = historyPlayback;
   const [showHistoryConfig, setShowHistoryConfig] = useState(false);
+  const [showDemoConfig,    setShowDemoConfig]    = useState(false);
   const historyEnabledRef = useRef(historyEnabled);
 
   // Auto-open config dialog when entering history mode
@@ -49,12 +62,12 @@ export default function Header({
 
   return (
     <header id="header">
-      <div className="logo">
+      <button className="logo logo-btn" onClick={onLogoClick} title="Back to home">
         <div className="logo-mark">O</div>
         <div>
           <div className="logo-text">OTel UI</div>
         </div>
-      </div>
+      </button>
       <div className="logo-sub">
         {historyEnabled ? 'History Mode' : 'Live Trace Diagram'}
       </div>
@@ -83,7 +96,8 @@ export default function Header({
 
       {demoMode && (
         <div id="demo-banner">
-          ▶ Demo mode —{' '}
+          ▶ Demo{' '}
+          <button onClick={() => setShowDemoConfig(true)} title="Demo settings">⚙ Settings</button>
           <button onClick={onExitDemo}>Exit</button>
         </div>
       )}
@@ -103,6 +117,15 @@ export default function Header({
           <line x1="2" y1="2" x2="10" y2="10" />
         </svg>
         Filters
+      </button>
+
+      <button id="correlation-key-btn" title="Configure correlation key preference" onClick={onOpenCorrelationKeySettings}>
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <circle cx="3" cy="6" r="1" /><circle cx="9" cy="6" r="1" />
+          <line x1="4" y1="6" x2="8" y2="6" />
+          <path d="M3 3 Q3 2 4 2 L8 2 Q9 2 9 3" />
+        </svg>
+        Correlation
       </button>
 
       <div id="tab-bar">
@@ -159,6 +182,15 @@ export default function Header({
           open={showHistoryConfig}
           onClose={() => setShowHistoryConfig(false)}
           hp={historyPlayback}
+        />
+      )}
+      {demoMode && (
+        <DemoConfigDialog
+          open={showDemoConfig}
+          onClose={() => setShowDemoConfig(false)}
+          config={demoConfig}
+          onChange={onDemoConfigChange}
+          scenario={demoScenario}
         />
       )}
     </header>

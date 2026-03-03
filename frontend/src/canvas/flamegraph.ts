@@ -301,3 +301,202 @@ export function drawFlamegraph(
 
   return hitTest;
 }
+
+// ── Combined multi-trace flamegraph ──────────────────────────────────────────
+
+const LANE_HDR_H = 24; // height of the per-trace lane header row (px)
+
+/**
+ * Draw a combined flamegraph for multiple correlated traces, one lane per trace,
+ * all sharing the same global time axis.  Lane headers show `instance_id` (or
+ * the root span name as a fallback) so the viewer can identify each instance.
+ */
+export function drawCombinedFlamegraph(
+  traces:   TraceComplete[],
+  canvas:   HTMLCanvasElement,
+  filterFn: (spans: SpanEvent[]) => SpanEvent[],
+): FlamegraphHitTest {
+  const traceSpans = traces.map(t => filterFn(t.spans));
+  const allSpans   = traceSpans.flat();
+  if (allSpans.length === 0) return () => null;
+
+  const area = canvas.parentElement!;
+  const rect = area.getBoundingClientRect();
+  const w    = Math.max(300, rect.width || area.offsetWidth || area.clientWidth);
+
+  let tMin = Infinity, tMax = -Infinity;
+  for (const s of allSpans) {
+    if (s.start_time_unix_nano < tMin) tMin = s.start_time_unix_nano;
+    if (s.end_time_unix_nano   > tMax) tMax = s.end_time_unix_nano;
+  }
+  const tRange = Math.max(1, tMax - tMin);
+  const plotW  = w - TRC_PAD.l - TRC_PAD.r;
+  const axis   = buildAxis(allSpans, tMin, tRange, plotW);
+
+  const MIN_W = 18;
+
+  type FgRow = { spans: SpanEvent[]; rightmostPx: number };
+  const traceLanes: { trace: TraceComplete; rows: FgRow[] }[] = [];
+
+  for (let ti = 0; ti < traces.length; ti++) {
+    const vis = traceSpans[ti];
+    if (vis.length === 0) continue;
+    const rows: FgRow[] = [];
+    const sorted = [...vis].sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+    for (const span of sorted) {
+      const x0   = axis.toX(span.start_time_unix_nano);
+      const x1   = axis.toX(span.end_time_unix_nano);
+      const barW = Math.max(MIN_W, x1 - x0);
+      const idx  = rows.findIndex(row => x0 >= row.rightmostPx);
+      if (idx === -1) {
+        rows.push({ spans: [span], rightmostPx: x0 + barW + 1 });
+      } else {
+        rows[idx].spans.push(span);
+        rows[idx].rightmostPx = x0 + barW + 1;
+      }
+    }
+    traceLanes.push({ trace: traces[ti], rows });
+  }
+  if (traceLanes.length === 0) return () => null;
+
+  // Required canvas width: widest bar edge across all lanes
+  let requiredW = w;
+  for (const lane of traceLanes) {
+    for (const row of lane.rows) {
+      for (const span of row.spans) {
+        const x0   = TRC_PAD.l + axis.toX(span.start_time_unix_nano);
+        const x1   = TRC_PAD.l + axis.toX(span.end_time_unix_nano);
+        const barW = Math.max(MIN_W, x1 - x0);
+        requiredW  = Math.max(requiredW, x0 + barW + TRC_PAD.r);
+      }
+    }
+  }
+  const totalW = Math.ceil(requiredW);
+  const totalH = TRC_PAD.t
+    + traceLanes.reduce((s, l) => s + LANE_HDR_H + l.rows.length * TRC_ROW_H, 0)
+    + TRC_PAD.b;
+
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width        = totalW * dpr;
+  canvas.height       = totalH * dpr;
+  canvas.style.width  = `${totalW}px`;
+  canvas.style.height = `${totalH}px`;
+
+  const ctx = canvas.getContext('2d')!;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, totalW, totalH);
+  ctx.fillStyle = 'rgba(8,14,28,0.98)';
+  ctx.fillRect(0, 0, totalW, totalH);
+
+  // Compressed-gap bands
+  if (axis.gaps.length > 0) {
+    ctx.save();
+    const contentH = totalH - TRC_PAD.t - TRC_PAD.b;
+    for (const gap of axis.gaps) {
+      const gx = TRC_PAD.l + gap.x1;
+      const gw = gap.x2 - gap.x1;
+      ctx.fillStyle = 'rgba(255,255,255,0.025)';
+      ctx.fillRect(gx, TRC_PAD.t, gw, contentH);
+      ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+      ctx.lineWidth   = 1;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(gx, TRC_PAD.t, gw, contentH); ctx.clip();
+      const step = 4;
+      for (let s = -contentH; s < gw + contentH; s += step) {
+        ctx.beginPath();
+        ctx.moveTo(gx + s,           TRC_PAD.t);
+        ctx.lineTo(gx + s + contentH, TRC_PAD.t + contentH);
+        ctx.stroke();
+      }
+      ctx.restore();
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(gx,      TRC_PAD.t); ctx.lineTo(gx,      totalH - TRC_PAD.b); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(gx + gw, TRC_PAD.t); ctx.lineTo(gx + gw, totalH - TRC_PAD.b); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.font = '8px JetBrains Mono,monospace';
+      ctx.textBaseline = 'alphabetic';
+      ctx.textAlign    = 'center';
+      ctx.fillStyle    = 'rgba(255,255,255,0.22)';
+      ctx.fillText(fmtDur(gap.durNs / 1e6), gx + gw / 2, TRC_PAD.t - 5);
+    }
+    ctx.restore();
+  }
+
+  // Time axis
+  ctx.font         = '9px JetBrains Mono,monospace';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle    = C.dim;
+  ctx.textAlign    = 'left';
+  ctx.fillText('0', TRC_PAD.l, TRC_PAD.t - 5);
+  ctx.textAlign    = 'right';
+  ctx.fillText(fmtDur(tRange / 1e6), totalW - TRC_PAD.r, TRC_PAD.t - 5);
+
+  // Lanes
+  const hitRects: Array<{ x0: number; y: number; bw: number; span: SpanEvent; relStartMs: number }> = [];
+  let yOffset = TRC_PAD.t;
+
+  for (const lane of traceLanes) {
+    // Lane header
+    ctx.fillStyle = 'rgba(255,255,255,0.04)';
+    ctx.fillRect(0, yOffset, totalW, LANE_HDR_H);
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, yOffset); ctx.lineTo(totalW, yOffset); ctx.stroke();
+    const label = lane.trace.instance_id || lane.trace.root_span_name;
+    ctx.font = 'bold 10px JetBrains Mono,monospace';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign    = 'left';
+    ctx.fillStyle    = C.dim;
+    ctx.fillText(label, TRC_PAD.l, yOffset + LANE_HDR_H / 2);
+    yOffset += LANE_HDR_H;
+
+    // Span rows
+    ctx.save();
+    ctx.font = '10px JetBrains Mono,monospace';
+    ctx.textBaseline = 'middle';
+    for (let depth = 0; depth < lane.rows.length; depth++) {
+      for (const span of lane.rows[depth].spans) {
+        const x0       = TRC_PAD.l + axis.toX(span.start_time_unix_nano);
+        const x1       = TRC_PAD.l + axis.toX(span.end_time_unix_nano);
+        const naturalW = x1 - x0;
+        const bw       = Math.max(MIN_W, naturalW);
+        const y        = yOffset + depth * TRC_ROW_H;
+        const col      = targetColor(span.target);
+        const relStartMs = (span.start_time_unix_nano - tMin) / 1e6;
+        hitRects.push({ x0, y, bw: Math.max(bw, 6), span, relStartMs });
+
+        ctx.fillStyle = col.fill + 'cc';
+        if ((ctx as any).roundRect) {
+          ctx.beginPath();
+          (ctx as any).roundRect(x0, y + 1, bw - 1, TRC_ROW_H - 3, 3);
+          ctx.fill();
+        } else {
+          ctx.fillRect(x0, y + 1, bw - 1, TRC_ROW_H - 3);
+        }
+        if (bw > 20) {
+          ctx.fillStyle = col.text;
+          ctx.save();
+          ctx.beginPath(); ctx.rect(x0 + 3, y, bw - 6, TRC_ROW_H); ctx.clip();
+          ctx.fillText(span.name, x0 + 4, y + TRC_ROW_H / 2);
+          ctx.restore();
+        }
+      }
+    }
+    ctx.restore();
+    yOffset += lane.rows.length * TRC_ROW_H;
+  }
+
+  const hitTest: FlamegraphHitTest = (cssX, cssY) => {
+    for (let i = hitRects.length - 1; i >= 0; i--) {
+      const r = hitRects[i];
+      if (cssX >= r.x0 && cssX <= r.x0 + r.bw &&
+          cssY >= r.y  && cssY <= r.y + TRC_ROW_H) {
+        return { span: r.span, relStartMs: r.relStartMs };
+      }
+    }
+    return null;
+  };
+
+  return hitTest;
+}

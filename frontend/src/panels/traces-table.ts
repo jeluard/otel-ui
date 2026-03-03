@@ -409,6 +409,11 @@ export class TracesTable {
     tdTarget.appendChild(dot);
     tdTarget.appendChild(tgtText);
 
+    const tdInstance = tr.insertCell();
+    tdInstance.className = 'c-instance';
+    tdInstance.title = span.instance_id ?? '';
+    tdInstance.textContent = span.instance_id ?? '';
+
     const tdDur = tr.insertCell();
     tdDur.className = `c-dur mono${durCls ? ' ' + durCls : ''}`;
     tdDur.textContent = fmtDur(span.duration_ms);

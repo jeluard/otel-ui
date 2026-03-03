@@ -35,34 +35,33 @@ impl Db {
                  root_span_name TEXT NOT NULL,
                  duration_ms    REAL NOT NULL,
                  started_at     INTEGER NOT NULL,
-                 spans_json     TEXT NOT NULL
+                 spans_json     TEXT NOT NULL,
+                 service_name   TEXT NOT NULL DEFAULT '',
+                 instance_id    TEXT NOT NULL DEFAULT '',
+                 correlation_key TEXT
              );
-             CREATE INDEX IF NOT EXISTS idx_started_at ON traces(started_at);",
+             CREATE INDEX IF NOT EXISTS idx_started_at ON traces(started_at);
+             CREATE INDEX IF NOT EXISTS idx_service_name ON traces(service_name);
+             CREATE INDEX IF NOT EXISTS idx_correlation_key ON traces(correlation_key);",
         )?;
-        // Migration: add service_name column if it doesn't exist yet.
-        let has_service_name: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('traces') WHERE name='service_name'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )? > 0;
-        if !has_service_name {
-            conn.execute_batch(
-                "ALTER TABLE traces ADD COLUMN service_name TEXT NOT NULL DEFAULT '';
-                 CREATE INDEX IF NOT EXISTS idx_service_name ON traces(service_name);",
-            )?;
-        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
     }
 
-    pub fn insert_trace(&self, trace: &TraceComplete, service_name: &str) -> Result<()> {
+    pub fn insert_trace(
+        &self,
+        trace: &TraceComplete,
+        service_name: &str,
+        instance_id: &str,
+        correlation_key: Option<&str>,
+    ) -> Result<()> {
         let spans_json = serde_json::to_string(&trace.spans)?;
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO traces \
-             (trace_id, root_span_name, duration_ms, started_at, spans_json, service_name) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (trace_id, root_span_name, duration_ms, started_at, spans_json, service_name, instance_id, correlation_key) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 trace.trace_id,
                 trace.root_span_name,
@@ -70,6 +69,8 @@ impl Db {
                 trace.started_at as i64,
                 spans_json,
                 service_name,
+                instance_id,
+                correlation_key,
             ],
         )?;
         Ok(())
@@ -88,7 +89,7 @@ impl Db {
 
         // Build the query dynamically based on which optional filters are set.
         let mut sql = String::from(
-            "SELECT trace_id, root_span_name, duration_ms, started_at, spans_json \
+            "SELECT trace_id, root_span_name, duration_ms, started_at, spans_json, instance_id, correlation_key \
              FROM traces \
              WHERE started_at >= ?1 AND started_at <= ?2",
         );
@@ -132,11 +133,13 @@ impl Db {
                 row.get::<_, f64>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         })?;
         let mut traces = Vec::new();
         for row in rows {
-            let (trace_id, root_span_name, duration_ms, started_at, spans_json) = row?;
+            let (trace_id, root_span_name, duration_ms, started_at, spans_json, instance_id, correlation_key) = row?;
             let spans: Vec<SpanEvent> =
                 serde_json::from_str(&spans_json).unwrap_or_default();
             traces.push(TraceComplete {
@@ -145,6 +148,8 @@ impl Db {
                 root_span_name,
                 duration_ms,
                 started_at: started_at as u64,
+                instance_id,
+                correlation_key,
             });
         }
         Ok(traces)
@@ -164,6 +169,40 @@ impl Db {
             })),
             _ => Ok(None),
         }
+    }
+
+    pub fn query_by_correlation_key(&self, key: &str) -> Result<Vec<TraceComplete>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT trace_id, root_span_name, duration_ms, started_at, spans_json, instance_id, correlation_key \
+             FROM traces WHERE correlation_key = ?1 ORDER BY started_at ASC",
+        )?;
+        let rows = stmt.query_map([key], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+        let mut traces = Vec::new();
+        for row in rows {
+            let (trace_id, root_span_name, duration_ms, started_at, spans_json, instance_id, correlation_key) = row?;
+            let spans: Vec<SpanEvent> = serde_json::from_str(&spans_json).unwrap_or_default();
+            traces.push(TraceComplete {
+                trace_id,
+                spans,
+                root_span_name,
+                duration_ms,
+                started_at: started_at as u64,
+                instance_id,
+                correlation_key,
+            });
+        }
+        Ok(traces)
     }
 
     /// Delete all traces whose `started_at` is older than `older_than_ns` (nanoseconds).

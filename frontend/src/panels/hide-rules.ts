@@ -5,12 +5,14 @@ import type { SpanEvent } from '../core/types.ts';
 export interface HideRule { target: string; name?: string; }
 
 const HIDE_STORAGE_KEY     = 'otel_ui_hide_rules';
+const INSTANCE_FILTER_KEY  = 'otel_ui_instance_filter';
 const DEFAULT_FILTERS_PATH = './default-filters.json';
 
 // Private backing array — always an array, never null.
 // Imported modules get a live reference to this same array object.
 const _rules: HideRule[] = [];
 let _initialised = false;
+let _instanceFilter = '';
 
 // Immediately seed from localStorage if the user has saved preferences.
 (function () {
@@ -22,10 +24,20 @@ let _initialised = false;
     _rules.push(...parsed);
     _initialised = true;
   } catch { /* bad JSON — treat as missing */ }
+  _instanceFilter = localStorage.getItem(INSTANCE_FILTER_KEY) ?? '';
 })();
 
 /** Live reference to the hide-rules array. Always the same object; mutated in place. */
 export const hiddenRules: HideRule[] = _rules;
+
+export function getInstanceFilter(): string { return _instanceFilter; }
+
+export function setInstanceFilter(v: string): void {
+  _instanceFilter = v;
+  if (typeof localStorage === 'undefined' || typeof localStorage.setItem !== 'function') return;
+  if (v) localStorage.setItem(INSTANCE_FILTER_KEY, v);
+  else   localStorage.removeItem(INSTANCE_FILTER_KEY);
+}
 
 function saveRules(): void {
   if (typeof localStorage === 'undefined' || typeof localStorage.setItem !== 'function') return;

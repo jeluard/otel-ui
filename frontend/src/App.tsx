@@ -5,6 +5,7 @@ import React, {
   useRef,
   useEffect,
   useCallback,
+  useMemo,
 } from 'react';
 
 import { Layout }          from './canvas/layout.ts';
@@ -13,9 +14,11 @@ import { Camera }          from './canvas/camera.ts';
 import { targetColor }     from './core/colors.ts';
 import { edgeWouldCreateCycle } from './core/graph.ts';
 import { loadDefaultFilters, hiddenRules, isSpanHidden } from './panels/hide-rules.ts';
-import { startDemo }       from './core/demo.ts';
+import { startDemo, setDemoConfig, DEFAULT_DEMO_CONFIG } from './core/demo.ts';
+import type { DemoScenario, DemoConfig } from './core/demo.ts';
 import { useWebSocket }    from './hooks/useWebSocket.ts';
 import { useHistoryPlayback } from './hooks/useHistoryPlayback.ts';
+import { useCorrelationKeyPreference } from './hooks/useCorrelationKeyPreference.ts';
 import type { SpanEvent, WsMessage, Edge, Node, SpanArrivedPayload, TraceComplete } from './core/types.ts';
 
 import Header          from './components/Header.tsx';
@@ -26,6 +29,7 @@ import SpansView       from './components/SpansView.tsx';
 import TracesPanel     from './components/TracesPanel.tsx';
 import NodeDetailPanel from './components/NodeDetailPanel.tsx';
 import HideRulesDialog from './components/HideRulesDialog.tsx';
+import CorrelationKeyDialog from './components/CorrelationKeyDialog.tsx';
 
 import type { DiagramViewHandle }     from './components/DiagramView.tsx';
 import type { SpansViewHandle }       from './components/SpansView.tsx';
@@ -54,6 +58,8 @@ export interface SharedState {
   activeExpiry:   Map<string, number>;
   spansThisSecond:  number;
   tracesThisSecond: number;
+  spsSmoothed:      number;
+  tpsSmoothed:      number;
   lastRateUpdate:   number;
   traceHL:    { nodes: Set<string>; edgeKeys: Set<string> } | null;
   selectionHL: { nodes: Set<string>; edgeKeys: Set<string> } | null;
@@ -82,6 +88,9 @@ export default function App() {
   // ── React state ────────────────────────────────────────────────────────────
   const [wsConnected,    setWsConnected]    = useState(false);
   const [demoMode,       setDemoMode]       = useState(false);
+  const [demoScenario,   setDemoScenario]   = useState<DemoScenario>('standard');
+  const [demoConfig,     setDemoConfigState] = useState<DemoConfig>({ ...DEFAULT_DEMO_CONFIG });
+  const [welcomeVisible, setWelcomeVisible] = useState(true);
   const [activeTab,      setActiveTab]      = useState<TabId>('diagram');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [hasData,        setHasData]        = useState(false);
@@ -89,7 +98,18 @@ export default function App() {
   const [tps,              setTps]              = useState(0);
   const [spansFlashing,    setSpansFlashing]    = useState(false);
   const [showHideRules,    setShowHideRules]    = useState(false);
+  const [showCorrelationKeyDialog, setShowCorrelationKeyDialog] = useState(false);
   const [completedTraces,  setCompletedTraces]  = useState<TraceComplete[]>([]);
+  const [hasReceivedTraces, setHasReceivedTraces] = useState(false);
+
+  // ── Correlation key preference ─────────────────────────────────────────────
+  const correlationKeyPref = useCorrelationKeyPreference();
+
+  const knownInstances = useMemo(() => {
+    const seen = new Set<string>();
+    for (const t of completedTraces) if (t.instance_id) seen.add(t.instance_id);
+    return [...seen].sort();
+  }, [completedTraces]);
 
   // ── History playback ───────────────────────────────────────────────────────
   const historyPlayback  = useHistoryPlayback(demoMode);
@@ -136,6 +156,8 @@ export default function App() {
     activeExpiry:     new Map(),
     spansThisSecond:  0,
     tracesThisSecond: 0,
+    spsSmoothed:      0,
+    tpsSmoothed:      0,
     lastRateUpdate:   performance.now(),
     traceHL:          null,
     selectionHL:      null,
@@ -223,6 +245,7 @@ export default function App() {
       duration_ms:          msg.duration_ms,
       status:               msg.status,
       service_name:         msg.service_name,
+      instance_id:          msg.instance_id,
       attributes:           [],
     };
 
@@ -427,7 +450,9 @@ export default function App() {
 
         st.layout.upsert(visibleNodes);
         st.serverEdges = reWiredEdges;
-        for (const e of reWiredEdges) st.clientEdgeMap.delete(`${e.source}=>${e.target}`);
+        // Clear ALL client-derived edges so stale span edges from the previous
+        // topology (e.g. after a depth change) don't survive the snapshot.
+        st.clientEdgeMap = new Map();
         rebuildMergedEdges();
         for (const n of visibleNodes) targetColor(n.category);
         tracesPanelRef.current?.setMermaidDirty();
@@ -437,6 +462,7 @@ export default function App() {
       }
 
       case 'spans_batch':
+        if (msg.spans.length > 0) setHasReceivedTraces(true);
         for (const item of msg.spans) st.spanQueue.push(item);
         break;
 
@@ -544,10 +570,16 @@ export default function App() {
         }
       }
 
-      // Update sps/tps once per second
+      // Update sps/tps once per second using actual elapsed time and
+      // a two-window average to smooth out batch-arrival jitter.
       if (now - st.lastRateUpdate >= 1000) {
-        setSps(st.spansThisSecond);
-        setTps(st.tracesThisSecond);
+        const elapsed  = now - st.lastRateUpdate;
+        const instantSps = st.spansThisSecond  * 1000 / elapsed;
+        const instantTps = st.tracesThisSecond * 1000 / elapsed;
+        st.spsSmoothed = (st.spsSmoothed + instantSps) / 2;
+        st.tpsSmoothed = (st.tpsSmoothed + instantTps) / 2;
+        setSps(Math.round(st.spsSmoothed));
+        setTps(Math.round(st.tpsSmoothed));
         st.spansThisSecond  = 0;
         st.tracesThisSecond = 0;
         st.lastRateUpdate   = now;
@@ -558,21 +590,45 @@ export default function App() {
   }, [processSpan, historyPlayback]);
 
   // ── Demo mode ────────────────────────────────────────────────────────────────
-  const activateDemo = useCallback(() => {
+  const activateDemo = useCallback((scenario: DemoScenario = 'standard') => {
     if (demoModeRef.current) return;
+    setDemoConfig(demoConfig);
     setDemoMode(true);
+    setDemoScenario(scenario);
     setHasData(true);
+    setWelcomeVisible(false);
     setWsConnected(false); // show demo status, not ws status
-    demoCleanupRef.current = startDemo(handleMessage);
-  }, [handleMessage]);
+    setHasReceivedTraces(true);
+    demoCleanupRef.current = startDemo(handleMessage, scenario);
+  }, [handleMessage, demoConfig]);
+
+  const handleDemoConfigChange = useCallback((c: DemoConfig) => {
+    setDemoConfig(c);
+    setDemoConfigState(c);
+  }, []);
 
   const deactivateDemo = useCallback(() => {
     if (!demoModeRef.current) return;
     setDemoMode(false);
     setHasData(false);
+    setWelcomeVisible(true);
     setCompletedTraces([]);
+    setHasReceivedTraces(false);
     demoCleanupRef.current?.();
     demoCleanupRef.current = null;
+    setWsConnected(wsConnectedRef.current);
+  }, []);
+
+  const resetToWelcome = useCallback(() => {
+    if (demoModeRef.current) {
+      demoCleanupRef.current?.();
+      demoCleanupRef.current = null;
+      setDemoMode(false);
+    }
+    setHasData(false);
+    setWelcomeVisible(true);
+    setCompletedTraces([]);
+    setHasReceivedTraces(false);
     setWsConnected(wsConnectedRef.current);
   }, []);
 
@@ -646,20 +702,26 @@ export default function App() {
         onTabChange={handleTabChange}
         wsConnected={wsConnected}
         demoMode={demoMode}
+        demoScenario={demoScenario}
         onExitDemo={deactivateDemo}
+        demoConfig={demoConfig}
+        onDemoConfigChange={handleDemoConfigChange}
+        onLogoClick={resetToWelcome}
         sps={sps}
         tps={tps}
         spansFlashing={spansFlashing}
         onOpenFilters={() => setShowHideRules(true)}
+        onOpenCorrelationKeySettings={() => setShowCorrelationKeyDialog(true)}
         historyPlayback={historyPlayback}
       />
 
       <WelcomeScreen
         wsConnected={wsConnected}
-        demoMode={demoMode}
-        hasData={hasData}
+        welcomeVisible={welcomeVisible}
+        onConnectLive={() => setWelcomeVisible(false)}
         onEnterDemo={activateDemo}
         historyPlayback={historyPlayback}
+        hasReceivedTraces={hasReceivedTraces}
       />
 
       <DiagramView
@@ -682,6 +744,7 @@ export default function App() {
         getEdges={getEdges}
         getLayoutNodes={getLayoutNodes}
         onTraceHighlightChange={handleTraceHighlight}
+        correlationKeyName={correlationKeyPref.effectiveKey}
       />
 
       <NodeDetailPanel
@@ -701,6 +764,15 @@ export default function App() {
       <HideRulesDialog
         open={showHideRules}
         onClose={() => setShowHideRules(false)}
+        knownInstances={knownInstances}
+      />
+
+      <CorrelationKeyDialog
+        open={showCorrelationKeyDialog}
+        onClose={() => setShowCorrelationKeyDialog(false)}
+        serverKey={correlationKeyPref.serverKey}
+        userPreference={correlationKeyPref.userPreference}
+        onSave={correlationKeyPref.setPreference}
       />
     </div>
   );

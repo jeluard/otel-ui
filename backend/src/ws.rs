@@ -6,7 +6,7 @@ use std::time::Duration;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Query, State,
+        Path, Query, State,
     },
     http::StatusCode,
     response::IntoResponse,
@@ -35,6 +35,7 @@ pub async fn run_http_server(state: SharedState, bind: &str) -> anyhow::Result<(
         .route("/config", get(config_handler))
         .route("/api/traces", get(traces_handler))
         .route("/api/traces/bounds", get(traces_bounds_handler))
+        .route("/api/correlated/{key}", get(correlated_handler))
         .layer(cors)
         .with_state(state);
 
@@ -110,6 +111,24 @@ async fn traces_bounds_handler(
         Ok(Ok(bounds)) => Json(bounds).into_response(),
         Ok(Err(e)) => {
             tracing::error!("DB bounds error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            tracing::error!("Task join error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn correlated_handler(
+    State(state): State<SharedState>,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    let db = Arc::clone(&state.db);
+    match tokio::task::spawn_blocking(move || db.query_by_correlation_key(&key)).await {
+        Ok(Ok(traces)) => Json(traces).into_response(),
+        Ok(Err(e)) => {
+            tracing::error!("DB correlated query error: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
         Err(e) => {

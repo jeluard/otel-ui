@@ -86,7 +86,7 @@ const SpansView = forwardRef<SpansViewHandle, SpansViewProps>(
             <input ref={durMaxRef} id="f-dur-max" className="filter-input filter-input-short" type="number" placeholder="∞" min="0" step="1" />
             <span className="filter-unit">ms</span>
           </div>
-          <button ref={clearBtnRef}>✕ Clear</button>
+          <button ref={clearBtnRef} id="spv-clear-btn">✕ Clear</button>
           <span ref={matchRef} id="f-match" />
         </div>
 
@@ -99,6 +99,7 @@ const SpansView = forwardRef<SpansViewHandle, SpansViewProps>(
                 <col className="c-trace" />
                 <col className="c-name" />
                 <col className="c-target" />
+                <col className="c-instance" />
                 <col className="c-dur" />
               </colgroup>
               <thead>
@@ -107,6 +108,7 @@ const SpansView = forwardRef<SpansViewHandle, SpansViewProps>(
                   <th className="c-trace">Trace</th>
                   <th className="c-name">Span name</th>
                   <th className="c-target">Target</th>
+                  <th className="c-instance">Instance</th>
                   <th className="c-dur" style={{ textAlign: 'right' }}>Duration</th>
                 </tr>
               </thead>

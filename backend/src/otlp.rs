@@ -54,6 +54,22 @@ impl TraceService for OtlpTraceReceiver {
                 })
                 .unwrap_or_else(|| "unknown".to_string());
 
+            let instance_id = resource_spans
+                .resource
+                .as_ref()
+                .and_then(|r| {
+                    r.attributes.iter().find(|kv| kv.key == "service.instance.id").and_then(|kv| {
+                        kv.value.as_ref().and_then(|v| {
+                            if let Some(AnyValueKind::StringValue(s)) = &v.value {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                })
+                .unwrap_or_default();
+
             for scope_spans in resource_spans.scope_spans {
                 let scope_target = scope_spans
                     .scope
@@ -108,6 +124,7 @@ impl TraceService for OtlpTraceReceiver {
                         attributes,
                         status,
                         service_name: service_name.clone(),
+                        instance_id: instance_id.clone(),
                     });
                 }
             }

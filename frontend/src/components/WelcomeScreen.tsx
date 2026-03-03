@@ -1,20 +1,24 @@
 // ── WelcomeScreen: shown before any data arrives ──────────────────────────────
 
-import React from 'react';
+import React, { useState } from 'react';
 import type { HistoryPlayback } from '../hooks/useHistoryPlayback.ts';
+import type { DemoScenario } from '../core/demo.ts';
 
 declare const __BRIDGE_IMAGE__: string;
 
 interface WelcomeScreenProps {
   wsConnected: boolean;
-  demoMode: boolean;
-  hasData: boolean;
-  onEnterDemo: () => void;
+  welcomeVisible: boolean;
+  onConnectLive: () => void;
+  onEnterDemo: (scenario: DemoScenario) => void;
   historyPlayback?: HistoryPlayback;
+  hasReceivedTraces?: boolean;
 }
 
-export default function WelcomeScreen({ wsConnected, demoMode, hasData, onEnterDemo, historyPlayback }: WelcomeScreenProps) {
-  if (demoMode || hasData || historyPlayback?.historyEnabled) return null;
+export default function WelcomeScreen({ wsConnected, welcomeVisible, onConnectLive, onEnterDemo, historyPlayback, hasReceivedTraces }: WelcomeScreenProps) {
+  const [scenario, setScenario] = useState<DemoScenario>('standard');
+
+  if (!welcomeVisible || historyPlayback?.historyEnabled) return null;
 
   const hasHistoryData = historyPlayback && historyPlayback.bounds && historyPlayback.bounds.count > 0;
   const statusColor = wsConnected ? 'var(--c-ok)' : 'var(--c-error)';
@@ -41,6 +45,7 @@ export default function WelcomeScreen({ wsConnected, demoMode, hasData, onEnterD
           {wsConnected ? (
             <div id="ws-bridge-ok">
               <div className="ws-bridge-ok-badge">✓ Bridge connected</div>
+              <button id="live-connect-btn" onClick={onConnectLive} disabled={!hasReceivedTraces}>▶ Start live view</button>
             </div>
           ) : (
             <div id="ws-step1">
@@ -75,7 +80,37 @@ export default function WelcomeScreen({ wsConnected, demoMode, hasData, onEnterD
         <div className="welcome-section">
           <div className="welcome-section-title">Explore with demo data</div>
           <div className="welcome-step">See how the UI looks with representative generated traces.</div>
-          <button id="demo-mode-btn" onClick={onEnterDemo}>▶ Enter Demo Mode</button>
+
+          <div className="demo-scenario-options">
+            <label className="demo-scenario-option">
+              <input
+                type="radio"
+                name="demo-scenario"
+                value="standard"
+                checked={scenario === 'standard'}
+                onChange={() => setScenario('standard')}
+              />
+              <span className="demo-scenario-label">
+                <span className="demo-scenario-name">Standard</span>
+                <span className="demo-scenario-desc">Distributed service topology with random traces</span>
+              </span>
+            </label>
+            <label className="demo-scenario-option">
+              <input
+                type="radio"
+                name="demo-scenario"
+                value="multi-instance"
+                checked={scenario === 'multi-instance'}
+                onChange={() => setScenario('multi-instance')}
+              />
+              <span className="demo-scenario-label">
+                <span className="demo-scenario-name">Multi-instance</span>
+                <span className="demo-scenario-desc">Parallel workers with correlated traces per block</span>
+              </span>
+            </label>
+          </div>
+
+          <button id="demo-mode-btn" onClick={() => onEnterDemo(scenario)}>▶ Enter Demo Mode</button>
         </div>
 
         <div id="welcome-status">

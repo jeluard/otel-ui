@@ -7,6 +7,8 @@ import {
   addHideRule,
   removeHideRule,
   resetHideRulesToDefaults,
+  getInstanceFilter,
+  setInstanceFilter as _setInstanceFilter,
   type HideRule,
 } from '../panels/hide-rules.ts';
 
@@ -14,9 +16,11 @@ export interface HideRulesApi {
   rules: HideRule[];
   /** Version counter — increment means rules changed. Use as a dependency / key. */
   version: number;
+  instanceFilter: string;
   add: (rule: HideRule) => void;
   remove: (index: number) => void;
   reset: () => Promise<void>;
+  setInstance: (v: string) => void;
 }
 
 export function useHideRules(): HideRulesApi {
@@ -39,5 +43,10 @@ export function useHideRules(): HideRulesApi {
     bump();
   }, []);
 
-  return { rules: hiddenRules, version, add, remove, reset };
+  const setInstance = useCallback((v: string) => {
+    _setInstanceFilter(v);
+    bump();
+  }, []);
+
+  return { rules: hiddenRules, version, instanceFilter: getInstanceFilter(), add, remove, reset, setInstance };
 }

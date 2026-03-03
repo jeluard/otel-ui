@@ -40,6 +40,12 @@ struct Args {
     /// Prune traces older than --db-retention-days and exit immediately.
     #[arg(long, default_value_t = false)]
     prune: bool,
+
+    /// Span attribute key used to correlate traces across process instances.
+    /// If not set, trace correlation is disabled.
+    /// Overrides the OTEL_UI_CORRELATION_KEY environment variable.
+    #[arg(long, env = "OTEL_UI_CORRELATION_KEY")]
+    correlation_key: Option<String>,
 }
 
 #[tokio::main]
@@ -73,7 +79,10 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let state = Arc::new(AppState::new(Arc::clone(&db)));
+    let state = Arc::new(AppState::new(
+        Arc::clone(&db),
+        args.correlation_key.unwrap_or_default(),
+    ));
 
     // Start the OTLP gRPC receiver
     let otlp_state = state.clone();

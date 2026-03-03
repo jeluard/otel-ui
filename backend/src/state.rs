@@ -41,6 +41,7 @@ pub struct SpanArrivedPayload {
     pub duration_ms: f64,
     pub status: String,
     pub service_name: String,
+    pub instance_id: String,
     /// Source node id (parent's target)
     pub from_node: Option<String>,
     /// Destination node id
@@ -63,6 +64,7 @@ pub struct SpanEvent {
     pub attributes: Vec<(String, String)>,
     pub status: String,
     pub service_name: String,
+    pub instance_id: String,
 }
 
 /// A complete trace (collection of spans for a single block processing run).
@@ -73,6 +75,11 @@ pub struct TraceComplete {
     pub root_span_name: String,
     pub duration_ms: f64,
     pub started_at: u64,
+    /// Identifies which process instance produced this trace (from service.instance.id).
+    pub instance_id: String,
+    /// The value of the configured correlation-key attribute, if present in any span.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_key: Option<String>,
 }
 
 /// Events broadcast to WebSocket clients.
@@ -105,6 +112,12 @@ pub enum WsMessage {
     SpansBatch {
         spans: Vec<SpanArrivedPayload>,
     },
+    /// Correlation group updated — emitted whenever a trace with a correlation key
+    /// is finalised, so clients can build the key → [trace_id] index incrementally.
+    CorrelationGroupUpdated {
+        key: String,
+        trace_ids: Vec<String>,
+    },
 }
 
 /// In-flight spans keyed by trace_id, then by span_id.
@@ -127,10 +140,14 @@ pub struct AppState {
     last_topo_ms: std::sync::atomic::AtomicU64,
     /// Optional SQLite persistence layer.
     pub db: Arc<Db>,
+    /// The span attribute key used to correlate traces across process instances.
+    pub correlation_key_name: String,
+    /// Maps correlation-key value → list of trace_ids sharing that key.
+    pub correlation_index: DashMap<String, Vec<String>>,
 }
 
 impl AppState {
-    pub fn new(db: Arc<Db>) -> Self {
+    pub fn new(db: Arc<Db>, correlation_key_name: String) -> Self {
         let (tx, _): (broadcast::Sender<Arc<String>>, _) = broadcast::channel(4096);
         Self {
             broadcast: tx,
@@ -143,13 +160,17 @@ impl AppState {
             span_start_index: DashMap::new(),
             last_topo_ms: std::sync::atomic::AtomicU64::new(0),
             db,
+            correlation_key_name,
+            correlation_index: DashMap::new(),
         }
     }
 
     /// Returns a JSON blob with the backend configuration sent to every new
     /// WebSocket client (and also available via GET /config).
     pub fn get_config_json(&self) -> Arc<String> {
-        Arc::new(serde_json::json!({}).to_string())
+        Arc::new(serde_json::json!({
+            "correlation_key_name": self.correlation_key_name,
+        }).to_string())
     }
 
     pub fn get_topology_snapshot(&self) -> Arc<String> {
@@ -216,6 +237,7 @@ impl AppState {
             duration_ms: span.duration_ms,
             status: span.status.clone(),
             service_name: span.service_name.clone(),
+            instance_id: span.instance_id.clone(),
             from_node,
             to_node: node_id,
             edge_latency_ms,
@@ -266,11 +288,16 @@ impl AppState {
             let started_at = spans.first().map(|s| s.start_time_unix_nano).unwrap_or(0);
             let ended_at = spans.iter().map(|s| s.end_time_unix_nano).max().unwrap_or(0);
             let duration_ms = (ended_at.saturating_sub(started_at)) as f64 / 1_000_000.0;
-            let root_span_name = spans
-                .iter()
-                .find(|s| s.parent_span_id.is_none())
-                .map(|s| s.name.clone())
-                .unwrap_or_default();
+            let root_span = spans.iter().find(|s| s.parent_span_id.is_none());
+            let root_span_name = root_span.map(|s| s.name.clone()).unwrap_or_default();
+            let instance_id = root_span.map(|s| s.instance_id.clone()).unwrap_or_default();
+
+            // Scan all spans for the correlation key attribute.
+            let correlation_key: Option<String> = spans.iter().find_map(|s| {
+                s.attributes.iter().find_map(|(k, v)| {
+                    if k == &self.correlation_key_name { Some(v.clone()) } else { None }
+                })
+            });
 
             let trace = TraceComplete {
                 trace_id: trace_id.to_string(),
@@ -278,6 +305,8 @@ impl AppState {
                 root_span_name,
                 duration_ms,
                 started_at,
+                instance_id,
+                correlation_key: correlation_key.clone(),
             };
 
             // Persist trace to SQLite asynchronously (non-blocking path).
@@ -290,15 +319,34 @@ impl AppState {
                     .map(|s| s.service_name.clone())
                     .unwrap_or_default();
                 tokio::spawn(async move {
-                    if let Err(e) = tokio::task::spawn_blocking(move || db.insert_trace(&trace_for_db, &service_name)).await {
+                    if let Err(e) = tokio::task::spawn_blocking(move || {
+                        db.insert_trace(
+                            &trace_for_db,
+                            &service_name,
+                            &trace_for_db.instance_id,
+                            trace_for_db.correlation_key.as_deref(),
+                        )
+                    }).await {
                         tracing::error!("Failed to persist trace: {}", e);
                     }
                 });
             }
 
             let _ = self.broadcast.send(Arc::new(
-                serde_json::to_string(&WsMessage::TraceCompleted { trace }).unwrap_or_default()
+                serde_json::to_string(&WsMessage::TraceCompleted { trace: trace.clone() }).unwrap_or_default()
             ));
+
+            // If this trace has a correlation key, update the index and broadcast.
+            if let Some(key) = correlation_key {
+                let mut entry = self.correlation_index.entry(key.clone()).or_insert_with(Vec::new);
+                entry.push(trace_id.to_string());
+                let trace_ids = entry.clone();
+                drop(entry); // release the DashMap guard before broadcasting
+                let _ = self.broadcast.send(Arc::new(
+                    serde_json::to_string(&WsMessage::CorrelationGroupUpdated { key, trace_ids })
+                        .unwrap_or_default()
+                ));
+            }
         }
     }
 

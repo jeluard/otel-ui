@@ -39,6 +39,20 @@ export function targetColor(target: string) {
   return TARGET_PALETTE[idx] ?? FALLBACK;
 }
 
+// instance_id string → palette index (assigned on first use, separate map from targets)
+const assignedInstances = new Map<string, number>();
+let _nextInstIdx = 0;
+
+export function instanceColor(instanceId: string) {
+  if (!instanceId) return FALLBACK;
+  let idx = assignedInstances.get(instanceId);
+  if (idx === undefined) {
+    idx = _nextInstIdx++ % TARGET_PALETTE.length;
+    assignedInstances.set(instanceId, idx);
+  }
+  return TARGET_PALETTE[idx] ?? FALLBACK;
+}
+
 /** Returns all targets that have been assigned a colour, sorted alphabetically. */
 export function getAssignedTargets(): Array<{ target: string; color: { fill: string; text: string } }> {
   return Array.from(assignedTargets.entries())

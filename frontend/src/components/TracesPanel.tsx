@@ -10,11 +10,13 @@ import React, {
 } from 'react';
 import type { SpanEvent, Edge, TraceComplete } from '../core/types.ts';
 import type { LayoutNode } from '../canvas/layout.ts';
-import { drawFlamegraph } from '../canvas/flamegraph.ts';
+import { drawFlamegraph, drawCombinedFlamegraph } from '../canvas/flamegraph.ts';
 import type { FlamegraphHitTest } from '../canvas/flamegraph.ts';
-import { targetColor } from '../core/colors.ts';
+import { fetchCorrelatedTraces } from '../core/history-client.ts';
+import { targetColor, instanceColor } from '../core/colors.ts';
 import { fmtDur, escHtml } from '../core/utils.ts';
 import { filterSpans, isSpanHidden } from '../panels/hide-rules.ts';
+import { useHideRules } from '../hooks/useHideRules.ts';
 import { C } from '../core/theme.ts';
 import type { TabId } from '../App.tsx';
 
@@ -100,12 +102,13 @@ interface TracesPanelProps {
   getEdges: () => Edge[];
   getLayoutNodes: () => Map<string, LayoutNode>;
   onTraceHighlightChange: (hl: { nodes: Set<string>; edgeKeys: Set<string> } | null) => void;
+  correlationKeyName?: string | null;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
-  function TracesPanel({ activeTab, inFlightSpans, getEdges, getLayoutNodes, onTraceHighlightChange }, ref) {
+  function TracesPanel({ activeTab, inFlightSpans, getEdges, getLayoutNodes, onTraceHighlightChange, correlationKeyName }, ref) {
     const [traces, setTraces]               = useState<TraceComplete[]>([]);
     const [selectedId, setSelectedId]       = useState<string | null>(null);
     const [detailTab, setDetailTab]         = useState<DetailTab>('flame');
@@ -114,6 +117,12 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
     // Freeze the list while the mouse is over it so items don't shift mid-click
     const [listFrozen, setListFrozen]       = useState(false);
     const frozenTracesRef                   = useRef<TraceComplete[]>([]);
+    const { instanceFilter } = useHideRules();
+    const [showCorrelated,    setShowCorrelated]    = useState(false);
+    const [correlatedLoading, setCorrelatedLoading] = useState(false);
+    const showCorrelatedRef   = useRef(false);
+    const correlatedTracesRef = useRef<TraceComplete[]>([]);
+    useEffect(() => { showCorrelatedRef.current = showCorrelated; }, [showCorrelated]);;
 
     // Mutable refs (avoid triggering React re-renders for high-freq updates)
     const tracehlRef         = useRef<{ nodes: Set<string>; edgeKeys: Set<string> } | null>(null);
@@ -162,7 +171,10 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
       setMermaidDirty() { mermaidDirtyRef.current = true; },
       onTabEntered()    {
         if (mermaidDirtyRef.current) renderMermaid();
-        if (selectedIdRef.current) redrawSelected(selectedIdRef.current);
+        if (selectedIdRef.current) {
+          if (showCorrelatedRef.current) void redrawCorrelated(selectedIdRef.current);
+          else redrawSelected(selectedIdRef.current);
+        }
       },
       getTraceHL() { return tracehlRef.current; },
       lookupSpan(spanId: string) {
@@ -178,6 +190,9 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
         setSelectedId(null);
         tracehlRef.current = null;
         onTraceHighlightChange(null);
+        setShowCorrelated(false);
+        showCorrelatedRef.current = false;
+        correlatedTracesRef.current = [];
       },
     }));
 
@@ -217,6 +232,9 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
       selectedIdRef.current = traceId; // eager update — avoids stale ref in frozen-list filter
       setSelectedId(traceId);
       setShowHidden(false);
+      setShowCorrelated(false);
+      showCorrelatedRef.current = false;
+      correlatedTracesRef.current = [];
       flameDirtyRef.current = false;
 
       const trace = tracesRef.current.find(t => t.trace_id === traceId);
@@ -229,6 +247,27 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
       // Draw flamegraph after selection
       requestAnimationFrame(() => redrawSelected(traceId));
     }, [inFlightSpans, getEdges, getLayoutNodes, onTraceHighlightChange, highlightMermaidNodes]);
+
+    // ── Redraw combined correlated flamegraph ───────────────────────────
+    const redrawCorrelated = useCallback(async (traceId: string) => {
+      const trace = tracesRef.current.find(t => t.trace_id === traceId);
+      if (!trace?.correlation_key) return;
+      let correlated = correlatedTracesRef.current;
+      if (correlated.length === 0) {
+        setCorrelatedLoading(true);
+        try {
+          correlated = await fetchCorrelatedTraces(trace.correlation_key);
+          correlatedTracesRef.current = correlated;
+        } finally {
+          setCorrelatedLoading(false);
+        }
+      }
+      const canvas = flameCanvasRef.current;
+      if (!canvas || correlated.length === 0) return;
+      canvas.style.display = 'block';
+      flameHitTestRef.current = drawCombinedFlamegraph(correlated, canvas, filterSpans);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // ── Redraw flamegraph for selected trace ─────────────────────────────
     const redrawSelected = useCallback((traceId: string) => {
@@ -249,6 +288,7 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
         root_span_name: root?.name ?? '',
         duration_ms:    (tMax - tMin) / 1_000_000,
         started_at:     tMin,
+        instance_id:    '',
       };
       canvas.style.display = 'block';
       flameHitTestRef.current = drawFlamegraph(synth, canvas, filterSpans);
@@ -260,7 +300,7 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
       let rafId: number;
       const tick = () => {
         rafId = requestAnimationFrame(tick);
-        if (flameDirtyRef.current && selectedIdRef.current) {
+        if (flameDirtyRef.current && selectedIdRef.current && !showCorrelatedRef.current) {
           flameDirtyRef.current = false;
           redrawSelected(selectedIdRef.current);
         }
@@ -273,6 +313,18 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
     useEffect(() => {
       if (detailTab === 'flame' && selectedId) redrawSelected(selectedId);
     }, [detailTab, selectedId, redrawSelected]);
+
+    // Toggle between single-trace and correlated view
+    useEffect(() => {
+      if (!selectedId) return;
+      if (showCorrelated) {
+        void redrawCorrelated(selectedId);
+      } else {
+        correlatedTracesRef.current = [];
+        redrawSelected(selectedId);
+      }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [showCorrelated]);
 
     // ── Flamegraph hover tooltip ─────────────────────────────────────────
     useEffect(() => {
@@ -598,12 +650,18 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
                     onClick={() => selectTrace(pinned.trace_id)}
                   >✕</button>
                 </div>
-                <div className="trc-item trc-selected">
+                <div className="trc-item trc-selected" title={pinned.instance_id || undefined}>
                   <div className="trc-item-id">&#8230;{pinned.trace_id.slice(-12)}</div>
                   <div className="trc-item-root">{displayName}</div>
                   <div className="trc-item-meta">
                     <span className="trc-item-dur">{fmtDur(pinned.duration_ms)}</span>
                     <span className="trc-item-cnt">{spanCount} span{spanCount !== 1 ? 's' : ''}</span>
+                    {pinned.instance_id && (
+                      <span
+                        className="trc-inst-dot"
+                        style={{ background: instanceColor(pinned.instance_id).fill }}
+                      />
+                    )}
                   </div>
                 </div>
               </div>
@@ -612,14 +670,17 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
           <div
             id="trc-list-items"
             onMouseEnter={() => {
-              frozenTracesRef.current = tracesRef.current.filter(t => t.trace_id !== selectedIdRef.current);
+              frozenTracesRef.current = tracesRef.current.filter(t =>
+                t.trace_id !== selectedIdRef.current &&
+                (!instanceFilter || t.instance_id === instanceFilter)
+              );
               setListFrozen(true);
             }}
             onMouseLeave={() => setListFrozen(false)}
             className={listFrozen ? 'trc-list-frozen' : undefined}
           >
             {(listFrozen ? frozenTracesRef.current : traces)
-              .filter(t => t.trace_id !== selectedId)
+              .filter(t => t.trace_id !== selectedId && (!instanceFilter || t.instance_id === instanceFilter))
               .map(trace => {
               const filtered   = filterSpans(trace.spans);
               const rootSpan   = trace.spans.find(s => !s.parent_span_id);
@@ -631,6 +692,7 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
                 <div
                   key={trace.trace_id}
                   className="trc-item"
+                  title={trace.instance_id || undefined}
                   onClick={() => selectTrace(trace.trace_id)}
                 >
                   <div className="trc-item-id">&#8230;{trace.trace_id.slice(-12)}</div>
@@ -638,6 +700,12 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
                   <div className="trc-item-meta">
                     <span className="trc-item-dur">{fmtDur(trace.duration_ms)}</span>
                     <span className="trc-item-cnt">{spanCount} span{spanCount !== 1 ? 's' : ''}</span>
+                    {trace.instance_id && (
+                      <span
+                        className="trc-inst-dot"
+                        style={{ background: instanceColor(trace.instance_id).fill }}
+                      />
+                    )}
                   </div>
                 </div>
               );
@@ -658,6 +726,17 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
                 onClick={() => setDetailTab('spans')}
               >Spans</button>
               <span id="trc-detail-title">{detailTitle}</span>
+              {selectedTrace?.correlation_key && (
+                <label className="trc-correlated-toggle" title={`Correlation key${correlationKeyName ? ` (${correlationKeyName})` : ''}: ${selectedTrace.correlation_key}`}>
+                  <input
+                    type="checkbox"
+                    checked={showCorrelated}
+                    disabled={correlatedLoading}
+                    onChange={e => setShowCorrelated(e.target.checked)}
+                  />
+                  {correlatedLoading ? 'Loading…' : 'Correlated'}
+                </label>
+              )}
               {selectedId && (
                 <button id="trc-export" onClick={handleExport} title="Export selected trace as JSON">
                   &#8595; Export JSON

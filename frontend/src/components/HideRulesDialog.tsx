@@ -7,10 +7,11 @@ import { useHideRules } from '../hooks/useHideRules.ts';
 interface HideRulesDialogProps {
   open: boolean;
   onClose: () => void;
+  knownInstances?: string[];
 }
 
-function HideRulesDialog({ open, onClose }: HideRulesDialogProps) {
-  const { rules, add, remove, reset } = useHideRules();
+function HideRulesDialog({ open, onClose, knownInstances = [] }: HideRulesDialogProps) {
+  const { rules, add, remove, reset, instanceFilter, setInstance } = useHideRules();
   const [target, setTarget] = useState('');
   const [name,   setName  ] = useState('');
 
@@ -34,9 +35,27 @@ function HideRulesDialog({ open, onClose }: HideRulesDialogProps) {
     <div id="hide-dialog-overlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div id="hide-dialog" role="dialog" aria-modal="true" aria-label="Hide Rules">
         <div id="hide-dialog-header">
-          <span id="hide-dialog-title">Hide Rules</span>
+          <span id="hide-dialog-title">Filters</span>
           <button id="hide-dialog-close" onClick={onClose} aria-label="Close">✕</button>
         </div>
+
+        {/* Instance filter */}
+        {knownInstances.length > 0 && (
+          <div id="hide-dialog-instance">
+            <div className="hide-dialog-section-title">Instance</div>
+            <select
+              id="hide-instance-select"
+              value={instanceFilter}
+              onChange={e => setInstance(e.target.value)}
+            >
+              <option value="">All instances</option>
+              {knownInstances.map(id => (
+                <option key={id} value={id}>{id}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <div id="hide-dialog-help">
           Spans matching <em>any</em> rule are excluded from flamegraphs and span tables.
           Leave a field blank to match any value.
