@@ -1,7 +1,6 @@
 // ── Demo mode: generates representative trace data for preview ─────────────
 
 import type { WsMessage, Node, SpanEvent, Edge, TraceComplete } from './types.ts';
-import { setDemoCorrelatedFn } from './history-client.ts';
 
 export type DemoScenario = 'standard' | 'multi-instance';
 
@@ -297,11 +296,12 @@ export function generateDemoHistoryTraces(from_ns: number, to_ns: number, count:
 }
 
 // ── Multi-instance demo scenario ─────────────────────────────────────────────
-// Simulates several parallel worker instances processing "blocks" that can be
-// correlated across instances via a shared correlation_key.
+// Simulates several parallel worker instances processing the same "block".
+// All workers share one trace_id (derived from the block hash) and carry
+// distinct instance_id values so the flamegraph shows them in parallel lanes.
 
-const MI_COORD     = 'coordinator';
-const MI_WORKERS   = ['worker-1', 'worker-2', 'worker-3', 'worker-4'];
+const MI_COORD     = 'instance.0';
+const MI_WORKERS   = ['instance.1', 'instance.2', 'instance.3', 'instance.4'];
 
 /**
  * Build a multi-instance topology snapshot.
@@ -335,19 +335,20 @@ function buildMultiInstanceTopology(workerCount: number, depth: number): WsMessa
     ...subInstances,
   ];
 
-  const nodes: Node[] = demoInstances.map(inst => ({
-    id: inst.id, category: inst.type, label: inst.id, span_count: 0,
-  }));
+  // Diagram nodes use service names (matching span.service_name / to_node),
+  // not instance IDs.  All worker instances share a single 'worker' node.
+  const subServiceTypes = [...new Set(subInstances.map(s => s.type))];
+  const nodes: Node[] = [
+    { id: 'block_processor', category: 'api',    label: 'block_processor', span_count: 0 },
+    { id: 'worker',          category: 'worker', label: 'worker',          span_count: 0 },
+    ...subServiceTypes.map(t => ({ id: t, category: t, label: t, span_count: 0 })),
+  ];
 
   const edges: Edge[] = [
-    ...activeWorkers.map(w => ({
-      source: MI_COORD, target: w,
-      flow_count: Math.floor(Math.random() * 90) + 10,
-    })),
-    // Each sub-service is reachable from a random worker
-    ...subInstances.map(s => ({
-      source: activeWorkers[Math.floor(Math.random() * activeWorkers.length)],
-      target: s.id,
+    { source: 'block_processor', target: 'worker',
+      flow_count: Math.floor(Math.random() * 90) + 10 },
+    ...subServiceTypes.map(t => ({
+      source: 'worker', target: t,
       flow_count: Math.floor(Math.random() * 50) + 5,
     })),
   ];
@@ -361,72 +362,145 @@ function generateMultiInstanceTopology(): WsMessage {
 }
 
 /**
- * Generate a correlated group of 2–4 traces — one per worker instance — all
- * sharing the same correlation_key to represent parallel block processing.
+ * Generate a single multi-instance trace: one trace_id shared across all active
+ * workers, with each worker contributing child spans under a common coordinator
+ * root span.  This mirrors the production model where deterministic trace IDs
+ * are derived from the processed block hash.
  */
-function generateCorrelatedGroup(correlatedMap: Map<string, TraceComplete[]>): TraceComplete[] {
-  const correlationKey  = randomId('block_');
+function generateMultiInstanceTrace(): TraceComplete {
   const activeWorkerIds = demoInstances.filter(i => i.type === 'worker').map(i => i.id);
-  if (activeWorkerIds.length === 0) return [];
-  const maxCount = Math.min(Math.floor(Math.random() * 3) + 2, activeWorkerIds.length);
-  const shuffled = [...activeWorkerIds].sort(() => Math.random() - 0.5).slice(0, maxCount);
-  const now      = Date.now() * 1e6;
+  if (activeWorkerIds.length === 0) return generateTrace(randomId('trace_'));
 
-  // Each worker generates a full trace tree (depth/fanout from config),
-  // rooted at that worker instance.
-  const traces: TraceComplete[] = shuffled.map(workerId => {
-    // Temporarily make this worker the root of demoInstances so generateTrace
-    // picks it as the root span and recurses into other workers as children.
-    const savedInstances = demoInstances;
-    // Put the target worker first so it becomes the root span.
-    demoInstances = [
-      { id: workerId, type: 'worker' as ServiceType },
-      ...savedInstances.filter(i => i.id !== workerId),
-    ];
-    const startNs = now + Math.floor((Math.random() - 0.5) * 600_000_000);
-    const trace   = generateTrace(randomId('trace_'), startNs);
-    demoInstances = savedInstances;
-    return { ...trace, correlation_key: correlationKey };
+  const traceId     = randomId('block_');
+  const now         = Date.now() * 1e6;
+  const isOutlier   = Math.random() < _cfg.outlierRate;
+  const totalDurNs  = isOutlier
+    ? randomDuration(150_000_000, 1_500_000_000)
+    : randomDuration(20_000_000, 80_000_000);
+
+  const spans: SpanEvent[] = [];
+
+  // Root span: coordinator
+  const rootSpanId = randomId('span_coord_');
+  spans.push({
+    span_id:              rootSpanId,
+    trace_id:             traceId,
+    parent_span_id:       null,
+    target:               'block_processor',
+    name:                 'process_block',
+    start_time_unix_nano: now,
+    end_time_unix_nano:   now + totalDurNs,
+    duration_ms:          totalDurNs / 1e6,
+    attributes:           [],
+    status:               Math.random() < _cfg.errorRate ? 'ERROR' : 'OK',
+    service_name:         'block_processor',
+    instance_id:          MI_COORD,
   });
 
-  correlatedMap.set(correlationKey, traces);
-  return traces;
+  // Each worker contributes a parallel child span tree.
+  // Workers start at roughly the same time (small random jitter) so they
+  // overlap in the flamegraph and look visually parallel.
+  const PAD_NS    = 500_000;
+  const workerDur = Math.max(1_000_000, totalDurNs - 2 * PAD_NS);
+  const jitterNs  = Math.floor(workerDur * 0.15); // up to ±15% jitter
+
+  for (let i = 0; i < activeWorkerIds.length; i++) {
+    const workerId  = activeWorkerIds[i];
+    const jitter    = Math.floor((Math.random() - 0.5) * 2 * jitterNs);
+    const wStart    = now + PAD_NS + jitter;
+    const wDur      = Math.max(1_000_000,
+      workerDur - PAD_NS + Math.floor((Math.random() - 0.5) * jitterNs));
+    const workerSpanId = randomId(`span_${workerId}_`);
+    const subServices = demoInstances.filter(inst =>
+      inst.type !== 'api' && inst.type !== 'worker'
+    );
+
+    spans.push({
+      span_id:              workerSpanId,
+      trace_id:             traceId,
+      parent_span_id:       rootSpanId,
+      target:               'worker',
+      name:                 'execute',
+      start_time_unix_nano: wStart,
+      end_time_unix_nano:   wStart + wDur,
+      duration_ms:          wDur / 1e6,
+      attributes:           [],
+      status:               Math.random() < _cfg.errorRate ? 'ERROR' : 'OK',
+      service_name:         'worker',
+      instance_id:          workerId,
+    });
+
+    // Optional sub-service calls from each worker
+    if (subServices.length > 0 && _cfg.maxDepth >= 3) {
+      const sub  = randomChoice(subServices);
+      const sDur = Math.floor(wDur * 0.4);
+      const sOff = Math.floor(wDur * 0.1);
+      spans.push({
+        span_id:              randomId(`span_${sub.id}_`),
+        trace_id:             traceId,
+        parent_span_id:       workerSpanId,
+        target:               sub.type,
+        name:                 randomChoice(DEMO_SPANS[sub.type] ?? ['call']),
+        start_time_unix_nano: wStart + sOff,
+        end_time_unix_nano:   wStart + sOff + sDur,
+        duration_ms:          sDur / 1e6,
+        attributes:           [],
+        status:               Math.random() < _cfg.errorRate ? 'ERROR' : 'OK',
+        service_name:         sub.type,
+        instance_id:          workerId,
+      });
+    }
+  }
+
+  spans.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+  return {
+    trace_id:       traceId,
+    spans,
+    root_span_name: 'process_block',
+    duration_ms:    totalDurNs / 1e6,
+    started_at:     now,
+    instance_id:    MI_COORD,
+  };
 }
 
 /**
- * Multi-instance demo scenario: emits correlated trace groups for several
- * parallel worker instances sharing block-level correlation keys.
+ * Multi-instance demo scenario: emits a single trace_completed per "block"
+ * where all worker spans share the same trace_id and carry distinct instance_id
+ * values.  This matches the production model of deterministic trace IDs derived
+ * from a block hash.
  */
 function startMultiInstanceDemo(onMessage: (msg: WsMessage) => void): () => void {
   _liveScenario  = 'multi-instance';
   _liveOnMessage = onMessage;
   onMessage(generateMultiInstanceTopology());
 
-  const correlatedMap = new Map<string, TraceComplete[]>();
-  setDemoCorrelatedFn(key => correlatedMap.get(key) ?? []);
-
-  function emitGroup() {
-    const traces = generateCorrelatedGroup(correlatedMap);
-    for (const trace of traces) {
-      onMessage(toSpansBatch(trace.spans));
-      onMessage({ type: 'trace_completed', trace });
+  function emitBlock() {
+    const trace = generateMultiInstanceTrace();
+    // Emit spans grouped by instance so each instance's batch arrives separately.
+    const instOrder: string[] = [];
+    const byInst = new Map<string, SpanEvent[]>();
+    for (const s of trace.spans) {
+      const iid = s.instance_id ?? '';
+      if (!byInst.has(iid)) { byInst.set(iid, []); instOrder.push(iid); }
+      byInst.get(iid)!.push(s);
     }
+    for (const iid of instOrder) onMessage(toSpansBatch(byInst.get(iid)!));
+    onMessage({ type: 'trace_completed', trace });
   }
 
   const intervalMs    = Math.round(1000 / _cfg.tracesPerSec);
-  const firstTimeout  = setTimeout(emitGroup, 100);
-  const groupInterval = setInterval(emitGroup, intervalMs);
-  _liveIntervalId = groupInterval;
-  _liveEmitFn     = emitGroup;
+  const firstTimeout  = setTimeout(emitBlock, 100);
+  const blockInterval = setInterval(emitBlock, intervalMs);
+  _liveIntervalId = blockInterval;
+  _liveEmitFn     = emitBlock;
 
   return () => {
     clearTimeout(firstTimeout);
-    clearInterval(groupInterval);
+    clearInterval(blockInterval);
     _liveIntervalId = null;
     _liveEmitFn     = null;
     _liveOnMessage  = null;
     _liveScenario   = 'standard';
-    setDemoCorrelatedFn(null);
   };
 }
 

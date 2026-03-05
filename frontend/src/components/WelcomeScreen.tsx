@@ -105,7 +105,7 @@ export default function WelcomeScreen({ wsConnected, welcomeVisible, onConnectLi
               />
               <span className="demo-scenario-label">
                 <span className="demo-scenario-name">Multi-instance</span>
-                <span className="demo-scenario-desc">Parallel workers with correlated traces per block</span>
+                <span className="demo-scenario-desc">Parallel workers sharing a single trace ID per block</span>
               </span>
             </label>
           </div>

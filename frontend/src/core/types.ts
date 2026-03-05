@@ -35,7 +35,6 @@ export interface TraceComplete {
   duration_ms: number;
   started_at: number;
   instance_id: string;
-  correlation_key?: string;
 }
 
 export interface SpanArrivedPayload {
@@ -60,8 +59,7 @@ export type WsMessage =
   | { type: 'spans_batch'; spans: SpanArrivedPayload[] }
   | { type: 'trace_completed'; trace: TraceComplete }
   | { type: 'topology_updated'; nodes: Node[]; edges: Edge[] }
-  | { type: 'stats'; total_traces: number; spans_per_second: number; active_nodes: number; timestamp: number }
-  | { type: 'correlation_group_updated'; key: string; trace_ids: string[] };
+  | { type: 'stats'; total_traces: number; spans_per_second: number; active_nodes: number; timestamp: number };
 
 export interface TraceBounds {
   min_started_at: number;

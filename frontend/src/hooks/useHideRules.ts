@@ -1,14 +1,12 @@
-// ── useHideRules: React hook wrapping the module-level hiddenRules array ─────
-// The module array is the ground truth; the version counter drives React re-renders.
-
 import { useState, useCallback } from 'react';
 import {
   hiddenRules,
   addHideRule,
   removeHideRule,
   resetHideRulesToDefaults,
-  getInstanceFilter,
-  setInstanceFilter as _setInstanceFilter,
+  getHiddenInstances,
+  toggleHiddenInstance as _toggleHiddenInstance,
+  clearHiddenInstances as _clearHiddenInstances,
   type HideRule,
 } from '../panels/hide-rules.ts';
 
@@ -16,11 +14,12 @@ export interface HideRulesApi {
   rules: HideRule[];
   /** Version counter — increment means rules changed. Use as a dependency / key. */
   version: number;
-  instanceFilter: string;
+  hiddenInstances: Set<string>;
   add: (rule: HideRule) => void;
   remove: (index: number) => void;
   reset: () => Promise<void>;
-  setInstance: (v: string) => void;
+  toggleInstance: (id: string) => void;
+  clearInstances: () => void;
 }
 
 export function useHideRules(): HideRulesApi {
@@ -43,10 +42,15 @@ export function useHideRules(): HideRulesApi {
     bump();
   }, []);
 
-  const setInstance = useCallback((v: string) => {
-    _setInstanceFilter(v);
+  const toggleInstance = useCallback((id: string) => {
+    _toggleHiddenInstance(id);
     bump();
   }, []);
 
-  return { rules: hiddenRules, version, instanceFilter: getInstanceFilter(), add, remove, reset, setInstance };
+  const clearInstances = useCallback(() => {
+    _clearHiddenInstances();
+    bump();
+  }, []);
+
+  return { rules: hiddenRules, version, hiddenInstances: getHiddenInstances(), add, remove, reset, toggleInstance, clearInstances };
 }

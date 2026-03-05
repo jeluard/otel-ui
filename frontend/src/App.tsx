@@ -13,12 +13,11 @@ import { Renderer }        from './canvas/renderer.ts';
 import { Camera }          from './canvas/camera.ts';
 import { targetColor }     from './core/colors.ts';
 import { edgeWouldCreateCycle } from './core/graph.ts';
-import { loadDefaultFilters, hiddenRules, isSpanHidden } from './panels/hide-rules.ts';
+import { loadDefaultFilters, hiddenRules, isSpanHidden, getHiddenInstances } from './panels/hide-rules.ts';
 import { startDemo, setDemoConfig, DEFAULT_DEMO_CONFIG } from './core/demo.ts';
 import type { DemoScenario, DemoConfig } from './core/demo.ts';
 import { useWebSocket }    from './hooks/useWebSocket.ts';
 import { useHistoryPlayback } from './hooks/useHistoryPlayback.ts';
-import { useCorrelationKeyPreference } from './hooks/useCorrelationKeyPreference.ts';
 import type { SpanEvent, WsMessage, Edge, Node, SpanArrivedPayload, TraceComplete } from './core/types.ts';
 
 import Header          from './components/Header.tsx';
@@ -29,7 +28,6 @@ import SpansView       from './components/SpansView.tsx';
 import TracesPanel     from './components/TracesPanel.tsx';
 import NodeDetailPanel from './components/NodeDetailPanel.tsx';
 import HideRulesDialog from './components/HideRulesDialog.tsx';
-import CorrelationKeyDialog from './components/CorrelationKeyDialog.tsx';
 
 import type { DiagramViewHandle }     from './components/DiagramView.tsx';
 import type { SpansViewHandle }       from './components/SpansView.tsx';
@@ -98,16 +96,16 @@ export default function App() {
   const [tps,              setTps]              = useState(0);
   const [spansFlashing,    setSpansFlashing]    = useState(false);
   const [showHideRules,    setShowHideRules]    = useState(false);
-  const [showCorrelationKeyDialog, setShowCorrelationKeyDialog] = useState(false);
   const [completedTraces,  setCompletedTraces]  = useState<TraceComplete[]>([]);
   const [hasReceivedTraces, setHasReceivedTraces] = useState(false);
+  const completedTracesRef = useRef<TraceComplete[]>([]);
+  useEffect(() => { completedTracesRef.current = completedTraces; }, [completedTraces]);
 
-  // ── Correlation key preference ─────────────────────────────────────────────
-  const correlationKeyPref = useCorrelationKeyPreference();
 
   const knownInstances = useMemo(() => {
     const seen = new Set<string>();
-    for (const t of completedTraces) if (t.instance_id) seen.add(t.instance_id);
+    for (const t of completedTraces)
+      for (const s of t.spans) { if (s.instance_id) seen.add(s.instance_id); }
     return [...seen].sort();
   }, [completedTraces]);
 
@@ -258,6 +256,12 @@ export default function App() {
       return;
     }
 
+    const hiddenInst = getHiddenInstances();
+    if (hiddenInst.size > 0 && span.instance_id && hiddenInst.has(span.instance_id)) {
+      st.spanVisibleNode.set(msg.span_id, effectiveFrom);
+      return;
+    }
+
     st.spanVisibleNode.set(msg.span_id, to_node);
 
     // Dynamic edge learning
@@ -319,11 +323,39 @@ export default function App() {
       duration_ms:          span.duration_ms,
       status:               span.status,
       service_name:         span.service_name,
+      instance_id:          span.instance_id,
       from_node:            (fromNode && fromNode !== nodeId) ? fromNode : null,
       to_node:              nodeId,
       edge_latency_ms:      (edgeLatencyMs != null && edgeLatencyMs >= 0) ? edgeLatencyMs : null,
     };
   }, []);
+
+  // ── Rebuild spans view and diagram after filter change ─────────────────────
+
+  const rebuildFromFilter = useCallback(() => {
+    const st = sharedRef.current;
+    spansViewRef.current?.clear();
+    st.nodeSpans       = new Map();
+    st.renderer.clearActivity();
+    st.activeExpiry    = new Map();
+    st.spanVisibleNode = new Map();
+    const now = performance.now();
+    const traces = [...completedTracesRef.current].sort((a, b) => a.started_at - b.started_at);
+    for (const trace of traces) {
+      const spanById = new Map<string, SpanEvent>(trace.spans.map(s => [s.span_id, s]));
+      const sorted = [...trace.spans].sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+      for (const span of sorted) processSpan(spanToArrivedPayload(span, spanById), now);
+      st.inFlightSpans.delete(trace.trace_id);
+      for (const s of trace.spans) st.spanVisibleNode.delete(s.span_id);
+      spansViewRef.current?.enrich(trace.spans);
+    }
+  }, [processSpan, spanToArrivedPayload]);
+
+  useEffect(() => {
+    const handler = () => rebuildFromFilter();
+    window.addEventListener('hidden-instances-changed', handler);
+    return () => window.removeEventListener('hidden-instances-changed', handler);
+  }, [rebuildFromFilter]);
 
   // When history traces are loaded, reset the shared state and inject synthetic topology.
   const prevHistoryTracesRef = useRef<TraceComplete[]>([]);
@@ -711,7 +743,6 @@ export default function App() {
         tps={tps}
         spansFlashing={spansFlashing}
         onOpenFilters={() => setShowHideRules(true)}
-        onOpenCorrelationKeySettings={() => setShowCorrelationKeyDialog(true)}
         historyPlayback={historyPlayback}
       />
 
@@ -744,7 +775,6 @@ export default function App() {
         getEdges={getEdges}
         getLayoutNodes={getLayoutNodes}
         onTraceHighlightChange={handleTraceHighlight}
-        correlationKeyName={correlationKeyPref.effectiveKey}
       />
 
       <NodeDetailPanel
@@ -765,14 +795,6 @@ export default function App() {
         open={showHideRules}
         onClose={() => setShowHideRules(false)}
         knownInstances={knownInstances}
-      />
-
-      <CorrelationKeyDialog
-        open={showCorrelationKeyDialog}
-        onClose={() => setShowCorrelationKeyDialog(false)}
-        serverKey={correlationKeyPref.serverKey}
-        userPreference={correlationKeyPref.userPreference}
-        onSave={correlationKeyPref.setPreference}
       />
     </div>
   );

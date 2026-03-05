@@ -4,15 +4,15 @@ import type { SpanEvent } from '../core/types.ts';
 
 export interface HideRule { target: string; name?: string; }
 
-const HIDE_STORAGE_KEY     = 'otel_ui_hide_rules';
-const INSTANCE_FILTER_KEY  = 'otel_ui_instance_filter';
-const DEFAULT_FILTERS_PATH = './default-filters.json';
+const HIDE_STORAGE_KEY       = 'otel_ui_hide_rules';
+const HIDDEN_INSTANCES_KEY   = 'otel_ui_hidden_instances';
+const DEFAULT_FILTERS_PATH   = './default-filters.json';
 
 // Private backing array — always an array, never null.
 // Imported modules get a live reference to this same array object.
 const _rules: HideRule[] = [];
 let _initialised = false;
-let _instanceFilter = '';
+let _hiddenInstances: Set<string> = new Set();
 
 // Immediately seed from localStorage if the user has saved preferences.
 (function () {
@@ -24,19 +24,35 @@ let _instanceFilter = '';
     _rules.push(...parsed);
     _initialised = true;
   } catch { /* bad JSON — treat as missing */ }
-  _instanceFilter = localStorage.getItem(INSTANCE_FILTER_KEY) ?? '';
+  try {
+    const raw = localStorage.getItem(HIDDEN_INSTANCES_KEY);
+    if (raw) _hiddenInstances = new Set(JSON.parse(raw) as string[]);
+  } catch { /* ignore */ }
 })();
 
 /** Live reference to the hide-rules array. Always the same object; mutated in place. */
 export const hiddenRules: HideRule[] = _rules;
 
-export function getInstanceFilter(): string { return _instanceFilter; }
+export function getHiddenInstances(): Set<string> { return _hiddenInstances; }
 
-export function setInstanceFilter(v: string): void {
-  _instanceFilter = v;
+export function toggleHiddenInstance(id: string): void {
+  if (_hiddenInstances.has(id)) _hiddenInstances.delete(id);
+  else _hiddenInstances.add(id);
+  _saveHiddenInstances();
+}
+
+export function clearHiddenInstances(): void {
+  _hiddenInstances = new Set();
+  _saveHiddenInstances();
+}
+
+function _saveHiddenInstances(): void {
   if (typeof localStorage === 'undefined' || typeof localStorage.setItem !== 'function') return;
-  if (v) localStorage.setItem(INSTANCE_FILTER_KEY, v);
-  else   localStorage.removeItem(INSTANCE_FILTER_KEY);
+  if (_hiddenInstances.size > 0)
+    localStorage.setItem(HIDDEN_INSTANCES_KEY, JSON.stringify([..._hiddenInstances]));
+  else
+    localStorage.removeItem(HIDDEN_INSTANCES_KEY);
+  window.dispatchEvent(new CustomEvent('hidden-instances-changed'));
 }
 
 function saveRules(): void {

@@ -22,7 +22,6 @@ interface HeaderProps {
   tps: number;
   spansFlashing: boolean;
   onOpenFilters: () => void;
-  onOpenCorrelationKeySettings: () => void;
   historyPlayback: HistoryPlayback;
 }
 
@@ -40,7 +39,6 @@ export default function Header({
   tps,
   spansFlashing,
   onOpenFilters,
-  onOpenCorrelationKeySettings,
   historyPlayback,
 }: HeaderProps) {
   const { historyEnabled, toggleHistory } = historyPlayback;
@@ -117,15 +115,6 @@ export default function Header({
           <line x1="2" y1="2" x2="10" y2="10" />
         </svg>
         Filters
-      </button>
-
-      <button id="correlation-key-btn" title="Configure correlation key preference" onClick={onOpenCorrelationKeySettings}>
-        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <circle cx="3" cy="6" r="1" /><circle cx="9" cy="6" r="1" />
-          <line x1="4" y1="6" x2="8" y2="6" />
-          <path d="M3 3 Q3 2 4 2 L8 2 Q9 2 9 3" />
-        </svg>
-        Correlation
       </button>
 
       <div id="tab-bar">

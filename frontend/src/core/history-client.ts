@@ -3,14 +3,6 @@
 
 import type { TraceComplete, TraceBounds } from './types.ts';
 
-// Demo mode override: set by demo.ts in multi-instance scenario so the
-// TracesPanel can resolve correlated traces without a real backend.
-let _demoCorrelatedFn: ((key: string) => TraceComplete[]) | null = null;
-
-export function setDemoCorrelatedFn(fn: ((key: string) => TraceComplete[]) | null): void {
-  _demoCorrelatedFn = fn;
-}
-
 const API_BASE = (() => {
   const { hostname, port, protocol } = window.location;
   if (port === '8080') return `${protocol}//${hostname}:8081`;
@@ -60,13 +52,3 @@ export async function fetchTraces(
   }
 }
 
-export async function fetchCorrelatedTraces(key: string): Promise<TraceComplete[]> {
-  if (_demoCorrelatedFn) return Promise.resolve(_demoCorrelatedFn(key));
-  try {
-    const res = await fetch(`${API_BASE}/api/correlated/${encodeURIComponent(key)}`);
-    if (!res.ok) return [];
-    return res.json() as Promise<TraceComplete[]>;
-  } catch {
-    return [];
-  }
-}

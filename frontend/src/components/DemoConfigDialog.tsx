@@ -2,8 +2,8 @@
 
 import React, { useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import type { DemoConfig } from '../core/demo.ts';
 import type { DemoConfig, DemoScenario } from '../core/demo.ts';
+import { DEFAULT_DEMO_CONFIG } from '../core/demo.ts';
 
 interface DemoConfigDialogProps {
   open:     boolean;

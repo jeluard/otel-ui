@@ -1,12 +1,14 @@
 // ── Flamegraph canvas renderer ───────────────────────────────────────────────
 
 import type { TraceComplete, SpanEvent } from '../core/types.ts';
-import { targetColor }                   from '../core/colors.ts';
+import { targetColor, instanceColor }     from '../core/colors.ts';
 import { fmtDur }                        from '../core/utils.ts';
 import { C }                             from '../core/theme.ts';
 
-export const TRC_ROW_H = 22;
-export const TRC_PAD   = { t: 22, b: 14, l: 4, r: 4 } as const;
+export const TRC_ROW_H  = 22;
+export const TRC_PAD    = { t: 22, b: 14, l: 4, r: 4 } as const;
+const INST_HDR_H = 14; // label strip above each instance group
+const INST_GAP_H = 6;  // vertical gap between instance groups
 
 /** Given CSS-pixel coordinates relative to the canvas element, returns the
  *  hovered SpanEvent (and its start offset from trace start), or null. */
@@ -99,6 +101,10 @@ export function drawFlamegraph(
   const visibleSpans = filterFn(trace.spans);
   if (visibleSpans.length === 0) return () => null;
 
+  // Detect multi-instance traces to conditionally draw per-span instance accents.
+  const instanceIds = new Set(visibleSpans.map(s => s.instance_id).filter(Boolean));
+  const multiInstance = instanceIds.size > 1;
+
   let tMin = Infinity, tMax = -Infinity;
   for (const s of visibleSpans) {
     if (s.start_time_unix_nano < tMin) tMin = s.start_time_unix_nano;
@@ -116,23 +122,64 @@ export function drawFlamegraph(
   // Visual row packing: assign each span to the first row where its *rendered*
   // bar doesn't overlap the previous bar. Using pixel coords (not time) respects
   // MIN_W so that expanded short spans don't collide.
-  type FgRow = { spans: SpanEvent[]; rightmostPx: number };
-  const rows: FgRow[] = [];
+  type FgRow   = { spans: SpanEvent[]; rightmostPx: number };
+  type FgGroup  = { instanceId: string; startRowIdx: number; rowCount: number };
+  const rows: FgRow[]     = [];
+  const groups: FgGroup[] = [];
   const allSpans = [...visibleSpans].sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
 
-  for (const span of allSpans) {
-    const x0  = axis.toX(span.start_time_unix_nano);
-    const x1  = axis.toX(span.end_time_unix_nano);
-    const barW = Math.max(MIN_W, x1 - x0);
-    const rowIdx = rows.findIndex(row => x0 >= row.rightmostPx);
-    if (rowIdx === -1) {
-      rows.push({ spans: [span], rightmostPx: x0 + barW + 1 });
-    } else {
-      rows[rowIdx].spans.push(span);
-      rows[rowIdx].rightmostPx = x0 + barW + 1;
+  if (multiInstance) {
+    // Group spans by instance_id, preserving encounter order (coordinator first).
+    const instOrder: string[] = [];
+    const byInst = new Map<string, SpanEvent[]>();
+    for (const s of allSpans) {
+      const iid = s.instance_id ?? '__none__';
+      if (!byInst.has(iid)) { byInst.set(iid, []); instOrder.push(iid); }
+      byInst.get(iid)!.push(s);
+    }
+    for (const iid of instOrder) {
+      const instSpans = byInst.get(iid)!;
+      const groupRows: FgRow[] = [];
+      for (const span of instSpans) {
+        const x0   = axis.toX(span.start_time_unix_nano);
+        const x1   = axis.toX(span.end_time_unix_nano);
+        const barW = Math.max(MIN_W, x1 - x0);
+        const ri   = groupRows.findIndex(r => x0 >= r.rightmostPx);
+        if (ri === -1) groupRows.push({ spans: [span], rightmostPx: x0 + barW + 1 });
+        else { groupRows[ri].spans.push(span); groupRows[ri].rightmostPx = x0 + barW + 1; }
+      }
+      groups.push({ instanceId: iid, startRowIdx: rows.length, rowCount: groupRows.length });
+      rows.push(...groupRows);
+    }
+  } else {
+    for (const span of allSpans) {
+      const x0   = axis.toX(span.start_time_unix_nano);
+      const x1   = axis.toX(span.end_time_unix_nano);
+      const barW = Math.max(MIN_W, x1 - x0);
+      const rowIdx = rows.findIndex(row => x0 >= row.rightmostPx);
+      if (rowIdx === -1) rows.push({ spans: [span], rightmostPx: x0 + barW + 1 });
+      else { rows[rowIdx].spans.push(span); rows[rowIdx].rightmostPx = x0 + barW + 1; }
     }
   }
   if (rows.length === 0) return () => null;
+
+  // Compute per-row Y positions, inserting header+gap space between instance groups.
+  const rowY: number[] = [];
+  if (multiInstance && groups.length > 0) {
+    let curY = TRC_PAD.t;
+    let gi   = 0;
+    for (let ri = 0; ri < rows.length; ri++) {
+      if (gi < groups.length && groups[gi].startRowIdx === ri) curY += INST_HDR_H;
+      rowY.push(curY);
+      curY += TRC_ROW_H;
+      if (gi < groups.length && ri === groups[gi].startRowIdx + groups[gi].rowCount - 1) {
+        if (gi < groups.length - 1) curY += INST_GAP_H;
+        gi++;
+      }
+    }
+  } else {
+    for (let ri = 0; ri < rows.length; ri++) rowY.push(TRC_PAD.t + ri * TRC_ROW_H);
+  }
 
   // Compute actual required canvas width: the rightmost bar edge across all rows.
   let requiredW = w;
@@ -145,7 +192,7 @@ export function drawFlamegraph(
     }
   }
   const totalW  = Math.ceil(requiredW);
-  const canvasH = TRC_PAD.t + rows.length * TRC_ROW_H + TRC_PAD.b;
+  const canvasH = (rowY.length > 0 ? rowY[rowY.length - 1] + TRC_ROW_H : TRC_PAD.t) + TRC_PAD.b;
 
   const dpr = window.devicePixelRatio || 1;
   canvas.width  = totalW * dpr;
@@ -213,6 +260,29 @@ export function drawFlamegraph(
     }
   }
 
+  // ── Instance group frames (drawn before spans) ───────────────────────────
+  if (multiInstance && groups.length > 0) {
+    ctx.save();
+    ctx.font = '9px JetBrains Mono,monospace';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign    = 'left';
+    for (const grp of groups) {
+      const col  = instanceColor(grp.instanceId);
+      const fy   = rowY[grp.startRowIdx] - INST_HDR_H + 1;
+      const fh   = grp.rowCount * TRC_ROW_H + INST_HDR_H - 2;
+      const fx   = TRC_PAD.l - 2;
+      const fw   = totalW - TRC_PAD.l - TRC_PAD.r + 4;
+      ctx.fillStyle = col.fill + '18';
+      ctx.fillRect(fx, fy, fw, fh);
+      ctx.strokeStyle = col.fill + 'bb';
+      ctx.lineWidth   = 1;
+      ctx.strokeRect(fx + 0.5, fy + 0.5, fw - 1, fh - 1);
+      ctx.fillStyle = col.fill;
+      ctx.fillText(grp.instanceId, fx + 4, fy + INST_HDR_H / 2);
+    }
+    ctx.restore();
+  }
+
   // ── Span bars ────────────────────────────────────────────────────────────
 
   // Collect hit-test rects as we draw (CSS pixels)
@@ -228,8 +298,10 @@ export function drawFlamegraph(
     const naturalW = x1 - x0;
     const isFast   = naturalW < FAST_PX;
     const bw       = isFast ? MIN_W : Math.max(MIN_W, naturalW);
-    const y        = TRC_PAD.t + depth * TRC_ROW_H;
-    const col      = targetColor(span.target);
+    const y        = rowY[depth];
+    const col      = (multiInstance && span.instance_id)
+      ? instanceColor(span.instance_id)
+      : targetColor(span.target);
     const relStartMs = (span.start_time_unix_nano - tMin) / 1e6;
     hitRects.push({ x0, y, bw: Math.max(bw, 6), span, relStartMs });
 
@@ -302,201 +374,4 @@ export function drawFlamegraph(
   return hitTest;
 }
 
-// ── Combined multi-trace flamegraph ──────────────────────────────────────────
 
-const LANE_HDR_H = 24; // height of the per-trace lane header row (px)
-
-/**
- * Draw a combined flamegraph for multiple correlated traces, one lane per trace,
- * all sharing the same global time axis.  Lane headers show `instance_id` (or
- * the root span name as a fallback) so the viewer can identify each instance.
- */
-export function drawCombinedFlamegraph(
-  traces:   TraceComplete[],
-  canvas:   HTMLCanvasElement,
-  filterFn: (spans: SpanEvent[]) => SpanEvent[],
-): FlamegraphHitTest {
-  const traceSpans = traces.map(t => filterFn(t.spans));
-  const allSpans   = traceSpans.flat();
-  if (allSpans.length === 0) return () => null;
-
-  const area = canvas.parentElement!;
-  const rect = area.getBoundingClientRect();
-  const w    = Math.max(300, rect.width || area.offsetWidth || area.clientWidth);
-
-  let tMin = Infinity, tMax = -Infinity;
-  for (const s of allSpans) {
-    if (s.start_time_unix_nano < tMin) tMin = s.start_time_unix_nano;
-    if (s.end_time_unix_nano   > tMax) tMax = s.end_time_unix_nano;
-  }
-  const tRange = Math.max(1, tMax - tMin);
-  const plotW  = w - TRC_PAD.l - TRC_PAD.r;
-  const axis   = buildAxis(allSpans, tMin, tRange, plotW);
-
-  const MIN_W = 18;
-
-  type FgRow = { spans: SpanEvent[]; rightmostPx: number };
-  const traceLanes: { trace: TraceComplete; rows: FgRow[] }[] = [];
-
-  for (let ti = 0; ti < traces.length; ti++) {
-    const vis = traceSpans[ti];
-    if (vis.length === 0) continue;
-    const rows: FgRow[] = [];
-    const sorted = [...vis].sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
-    for (const span of sorted) {
-      const x0   = axis.toX(span.start_time_unix_nano);
-      const x1   = axis.toX(span.end_time_unix_nano);
-      const barW = Math.max(MIN_W, x1 - x0);
-      const idx  = rows.findIndex(row => x0 >= row.rightmostPx);
-      if (idx === -1) {
-        rows.push({ spans: [span], rightmostPx: x0 + barW + 1 });
-      } else {
-        rows[idx].spans.push(span);
-        rows[idx].rightmostPx = x0 + barW + 1;
-      }
-    }
-    traceLanes.push({ trace: traces[ti], rows });
-  }
-  if (traceLanes.length === 0) return () => null;
-
-  // Required canvas width: widest bar edge across all lanes
-  let requiredW = w;
-  for (const lane of traceLanes) {
-    for (const row of lane.rows) {
-      for (const span of row.spans) {
-        const x0   = TRC_PAD.l + axis.toX(span.start_time_unix_nano);
-        const x1   = TRC_PAD.l + axis.toX(span.end_time_unix_nano);
-        const barW = Math.max(MIN_W, x1 - x0);
-        requiredW  = Math.max(requiredW, x0 + barW + TRC_PAD.r);
-      }
-    }
-  }
-  const totalW = Math.ceil(requiredW);
-  const totalH = TRC_PAD.t
-    + traceLanes.reduce((s, l) => s + LANE_HDR_H + l.rows.length * TRC_ROW_H, 0)
-    + TRC_PAD.b;
-
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width        = totalW * dpr;
-  canvas.height       = totalH * dpr;
-  canvas.style.width  = `${totalW}px`;
-  canvas.style.height = `${totalH}px`;
-
-  const ctx = canvas.getContext('2d')!;
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, totalW, totalH);
-  ctx.fillStyle = 'rgba(8,14,28,0.98)';
-  ctx.fillRect(0, 0, totalW, totalH);
-
-  // Compressed-gap bands
-  if (axis.gaps.length > 0) {
-    ctx.save();
-    const contentH = totalH - TRC_PAD.t - TRC_PAD.b;
-    for (const gap of axis.gaps) {
-      const gx = TRC_PAD.l + gap.x1;
-      const gw = gap.x2 - gap.x1;
-      ctx.fillStyle = 'rgba(255,255,255,0.025)';
-      ctx.fillRect(gx, TRC_PAD.t, gw, contentH);
-      ctx.strokeStyle = 'rgba(255,255,255,0.04)';
-      ctx.lineWidth   = 1;
-      ctx.save();
-      ctx.beginPath(); ctx.rect(gx, TRC_PAD.t, gw, contentH); ctx.clip();
-      const step = 4;
-      for (let s = -contentH; s < gw + contentH; s += step) {
-        ctx.beginPath();
-        ctx.moveTo(gx + s,           TRC_PAD.t);
-        ctx.lineTo(gx + s + contentH, TRC_PAD.t + contentH);
-        ctx.stroke();
-      }
-      ctx.restore();
-      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-      ctx.setLineDash([3, 3]);
-      ctx.beginPath(); ctx.moveTo(gx,      TRC_PAD.t); ctx.lineTo(gx,      totalH - TRC_PAD.b); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(gx + gw, TRC_PAD.t); ctx.lineTo(gx + gw, totalH - TRC_PAD.b); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.font = '8px JetBrains Mono,monospace';
-      ctx.textBaseline = 'alphabetic';
-      ctx.textAlign    = 'center';
-      ctx.fillStyle    = 'rgba(255,255,255,0.22)';
-      ctx.fillText(fmtDur(gap.durNs / 1e6), gx + gw / 2, TRC_PAD.t - 5);
-    }
-    ctx.restore();
-  }
-
-  // Time axis
-  ctx.font         = '9px JetBrains Mono,monospace';
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillStyle    = C.dim;
-  ctx.textAlign    = 'left';
-  ctx.fillText('0', TRC_PAD.l, TRC_PAD.t - 5);
-  ctx.textAlign    = 'right';
-  ctx.fillText(fmtDur(tRange / 1e6), totalW - TRC_PAD.r, TRC_PAD.t - 5);
-
-  // Lanes
-  const hitRects: Array<{ x0: number; y: number; bw: number; span: SpanEvent; relStartMs: number }> = [];
-  let yOffset = TRC_PAD.t;
-
-  for (const lane of traceLanes) {
-    // Lane header
-    ctx.fillStyle = 'rgba(255,255,255,0.04)';
-    ctx.fillRect(0, yOffset, totalW, LANE_HDR_H);
-    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(0, yOffset); ctx.lineTo(totalW, yOffset); ctx.stroke();
-    const label = lane.trace.instance_id || lane.trace.root_span_name;
-    ctx.font = 'bold 10px JetBrains Mono,monospace';
-    ctx.textBaseline = 'middle';
-    ctx.textAlign    = 'left';
-    ctx.fillStyle    = C.dim;
-    ctx.fillText(label, TRC_PAD.l, yOffset + LANE_HDR_H / 2);
-    yOffset += LANE_HDR_H;
-
-    // Span rows
-    ctx.save();
-    ctx.font = '10px JetBrains Mono,monospace';
-    ctx.textBaseline = 'middle';
-    for (let depth = 0; depth < lane.rows.length; depth++) {
-      for (const span of lane.rows[depth].spans) {
-        const x0       = TRC_PAD.l + axis.toX(span.start_time_unix_nano);
-        const x1       = TRC_PAD.l + axis.toX(span.end_time_unix_nano);
-        const naturalW = x1 - x0;
-        const bw       = Math.max(MIN_W, naturalW);
-        const y        = yOffset + depth * TRC_ROW_H;
-        const col      = targetColor(span.target);
-        const relStartMs = (span.start_time_unix_nano - tMin) / 1e6;
-        hitRects.push({ x0, y, bw: Math.max(bw, 6), span, relStartMs });
-
-        ctx.fillStyle = col.fill + 'cc';
-        if ((ctx as any).roundRect) {
-          ctx.beginPath();
-          (ctx as any).roundRect(x0, y + 1, bw - 1, TRC_ROW_H - 3, 3);
-          ctx.fill();
-        } else {
-          ctx.fillRect(x0, y + 1, bw - 1, TRC_ROW_H - 3);
-        }
-        if (bw > 20) {
-          ctx.fillStyle = col.text;
-          ctx.save();
-          ctx.beginPath(); ctx.rect(x0 + 3, y, bw - 6, TRC_ROW_H); ctx.clip();
-          ctx.fillText(span.name, x0 + 4, y + TRC_ROW_H / 2);
-          ctx.restore();
-        }
-      }
-    }
-    ctx.restore();
-    yOffset += lane.rows.length * TRC_ROW_H;
-  }
-
-  const hitTest: FlamegraphHitTest = (cssX, cssY) => {
-    for (let i = hitRects.length - 1; i >= 0; i--) {
-      const r = hitRects[i];
-      if (cssX >= r.x0 && cssX <= r.x0 + r.bw &&
-          cssY >= r.y  && cssY <= r.y + TRC_ROW_H) {
-        return { span: r.span, relStartMs: r.relStartMs };
-      }
-    }
-    return null;
-  };
-
-  return hitTest;
-}

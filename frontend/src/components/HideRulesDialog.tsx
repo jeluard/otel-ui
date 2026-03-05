@@ -11,7 +11,7 @@ interface HideRulesDialogProps {
 }
 
 function HideRulesDialog({ open, onClose, knownInstances = [] }: HideRulesDialogProps) {
-  const { rules, add, remove, reset, instanceFilter, setInstance } = useHideRules();
+  const { rules, add, remove, reset, hiddenInstances, toggleInstance, clearInstances } = useHideRules();
   const [target, setTarget] = useState('');
   const [name,   setName  ] = useState('');
 
@@ -42,17 +42,24 @@ function HideRulesDialog({ open, onClose, knownInstances = [] }: HideRulesDialog
         {/* Instance filter */}
         {knownInstances.length > 0 && (
           <div id="hide-dialog-instance">
-            <div className="hide-dialog-section-title">Instance</div>
-            <select
-              id="hide-instance-select"
-              value={instanceFilter}
-              onChange={e => setInstance(e.target.value)}
-            >
-              <option value="">All instances</option>
+            <div className="hide-dialog-section-title">
+              Instances
+              {hiddenInstances.size > 0 && (
+                <button className="hide-inst-show-all" onClick={clearInstances}>Show all</button>
+              )}
+            </div>
+            <div id="hide-inst-list">
               {knownInstances.map(id => (
-                <option key={id} value={id}>{id}</option>
+                <label key={id} className="hide-inst-row">
+                  <input
+                    type="checkbox"
+                    checked={!hiddenInstances.has(id)}
+                    onChange={() => toggleInstance(id)}
+                  />
+                  <span className="hide-inst-label">{id}</span>
+                </label>
               ))}
-            </select>
+            </div>
           </div>
         )}
 
