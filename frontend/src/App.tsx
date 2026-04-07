@@ -18,7 +18,7 @@ import { startDemo, setDemoConfig, DEFAULT_DEMO_CONFIG } from './core/demo.ts';
 import type { DemoScenario, DemoConfig } from './core/demo.ts';
 import { useWebSocket }    from './hooks/useWebSocket.ts';
 import { useHistoryPlayback } from './hooks/useHistoryPlayback.ts';
-import type { SpanEvent, WsMessage, Edge, Node, SpanArrivedPayload, TraceComplete } from './core/types.ts';
+import type { SpanEvent, WsMessage, Edge, Node, TraceComplete } from './core/types.ts';
 
 import Header          from './components/Header.tsx';
 import WelcomeScreen   from './components/WelcomeScreen.tsx';
@@ -49,7 +49,7 @@ export interface SharedState {
   serverEdges:    Edge[];
   clientEdgeMap:  Map<string, Edge>;
   edges:          Edge[];
-  spanQueue:      SpanArrivedPayload[];
+  spanQueue:      SpanEvent[];
   nodeSpans:      Map<string, SpanEvent[]>;
   inFlightSpans:  Map<string, SpanEvent[]>;
   spanVisibleNode: Map<string, string | null>;
@@ -117,15 +117,12 @@ export default function App() {
   useEffect(() => {
     historyEnabledRef.current = historyPlayback.historyEnabled;
     if (!historyPlayback.historyEnabled) {
-      // Exiting history: clear transient state and request a fresh live topology
-      // snapshot so the diagram re-syncs with live data.
-      // NOTE: we do NOT call st.layout.clear() here — layout.upsert() inside the
-      // topology_snapshot handler already removes stale nodes, so pre-clearing would
-      // leave the canvas blank between the clear and the server response.
+      // Exiting history: clear transient state. Topology will be rebuilt from live spans_batch messages.
       histLastCursorRef.current = 0;
       setCompletedTraces([]);
       const st = sharedRef.current;
       st.renderer.clearActivity();
+      st.layout.clear();
       st.serverEdges     = [];
       st.clientEdgeMap   = new Map();
       st.edges           = [];
@@ -134,7 +131,7 @@ export default function App() {
       st.inFlightSpans   = new Map();
       st.spanVisibleNode = new Map();
       st.activeExpiry    = new Map();
-      wsSend('topology');
+      // Topology will be rebuilt from live spans_batch messages.
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyPlayback.historyEnabled]);
@@ -167,9 +164,12 @@ export default function App() {
   const demoCleanupRef    = useRef<(() => void) | null>(null);
   const demoModeRef       = useRef(false);
   const wsConnectedRef    = useRef(false);
+  /** Persistent span-id → node-id index for cross-batch parent resolution. */
+  const spanIdToNodeRef   = useRef<Map<string, string>>(new Map());
+  /** Persistent span-id → start time (ns) for edge latency computation. */
+  const spanStartTimeRef  = useRef<Map<string, number>>(new Map());
   useEffect(() => { activeTabRef.current = activeTab; },     [activeTab]);
   useEffect(() => { demoModeRef.current  = demoMode; },      [demoMode]);
-  useEffect(() => { wsConnectedRef.current = wsConnected; }, [wsConnected]);
 
   // ── Component refs ──────────────────────────────────────────────────────────
   const diagramViewRef  = useRef<DiagramViewHandle>(null);
@@ -228,45 +228,37 @@ export default function App() {
   }, []);
 
   // ── Process a single span ───────────────────────────────────────────────────
-  const processSpan = useCallback((msg: SpanArrivedPayload, frameTime: number) => {
-    const { to_node } = msg;
+  const processSpan = useCallback((span: SpanEvent, frameTime: number) => {
+    const to_node = span.target;
     const st = sharedRef.current;
 
-    const span: SpanEvent = {
-      trace_id:             msg.trace_id,
-      span_id:              msg.span_id,
-      parent_span_id:       msg.parent_span_id,
-      name:                 msg.name,
-      target:               msg.target,
-      start_time_unix_nano: msg.start_time_unix_nano,
-      end_time_unix_nano:   msg.end_time_unix_nano,
-      duration_ms:          msg.duration_ms,
-      status:               msg.status,
-      service_name:         msg.service_name,
-      instance_id:          msg.instance_id,
-      attributes:           [],
-    };
+    // Populate indexes for descendant spans in this trace
+    spanIdToNodeRef.current.set(span.span_id, to_node);
+    spanStartTimeRef.current.set(span.span_id, span.start_time_unix_nano);
 
-    const effectiveFrom: string | null = msg.parent_span_id
-      ? (st.spanVisibleNode.get(msg.parent_span_id) ?? null)
+    const effectiveFrom: string | null = span.parent_span_id
+      ? (st.spanVisibleNode.get(span.parent_span_id) ?? null)
       : null;
 
     if (hiddenRules.length && isSpanHidden(span)) {
-      st.spanVisibleNode.set(msg.span_id, effectiveFrom);
+      st.spanVisibleNode.set(span.span_id, effectiveFrom);
       return;
     }
 
     const hiddenInst = getHiddenInstances();
     if (hiddenInst.size > 0 && span.instance_id && hiddenInst.has(span.instance_id)) {
-      st.spanVisibleNode.set(msg.span_id, effectiveFrom);
+      st.spanVisibleNode.set(span.span_id, effectiveFrom);
       return;
     }
 
-    st.spanVisibleNode.set(msg.span_id, to_node);
+    st.spanVisibleNode.set(span.span_id, to_node);
 
     // Dynamic edge learning
+    const fromNode = span.parent_span_id
+      ? (spanIdToNodeRef.current.get(span.parent_span_id) ?? null)
+      : null;
     const layoutFrom = effectiveFrom
-      ?? (msg.from_node && msg.from_node !== to_node ? msg.from_node : null);
+      ?? (fromNode && fromNode !== to_node ? fromNode : null);
     if (layoutFrom && layoutFrom !== to_node) {
       const ek = `${layoutFrom}=>${to_node}`;
       const serverHas = st.serverEdges.some(e => e.source === layoutFrom && e.target === to_node);
@@ -279,9 +271,9 @@ export default function App() {
     st.spansThisSecond++;
     flashSpanDot();
 
-    const existing = st.inFlightSpans.get(msg.trace_id);
-    if (existing) existing.push(span); else st.inFlightSpans.set(msg.trace_id, [span]);
-    tracesPanelRef.current?.notifySpanInFlight(msg.trace_id);
+    const existing = st.inFlightSpans.get(span.trace_id);
+    if (existing) existing.push(span); else st.inFlightSpans.set(span.trace_id, [span]);
+    tracesPanelRef.current?.notifySpanInFlight(span.trace_id);
 
     spansViewRef.current?.add(span, activeTabRef.current === 'spans');
     recordNodeSpan(to_node, span);
@@ -291,44 +283,35 @@ export default function App() {
     const cat = st.layout.nodes.get(to_node)?.category ?? 'other';
     st.renderer.activateNode(to_node, cat, frameTime, span.name);
     st.activeExpiry.set(to_node, frameTime + 600);
+
+    // Propagate activity (and span data) up the target path hierarchy.
+    // e.g. amaru::chain::validation also activates amaru::chain and amaru.
+    const parts = to_node.split('::');
+    for (let i = 1; i < parts.length; i++) {
+      const ancestorId = parts.slice(0, i).join('::');
+      const aCat = st.layout.nodes.get(ancestorId)?.category ?? cat;
+      st.renderer.activateNode(ancestorId, aCat, frameTime, span.name);
+      st.activeExpiry.set(ancestorId, frameTime + 600);
+      recordNodeSpan(ancestorId, span);
+      nodeDetailRef.current?.notifySpanArrived(ancestorId, span.duration_ms);
+      // Activate the ancestry edge too
+      const childId = parts.slice(0, i + 1).join('::');
+      st.renderer.activateEdge(ancestorId, childId, frameTime, Math.min(1200, Math.max(120, span.duration_ms)));
+    }
+
     if (effectiveFrom && effectiveFrom !== to_node) {
-      const rawMs   = msg.edge_latency_ms ?? span.duration_ms;
+      const parentStartNs = span.parent_span_id
+        ? spanStartTimeRef.current.get(span.parent_span_id)
+        : undefined;
+      const edge_latency_ms = parentStartNs != null
+        ? (span.start_time_unix_nano - parentStartNs) / 1_000_000
+        : null;
+      const rawMs   = edge_latency_ms ?? span.duration_ms;
       const pulseMs = Math.min(1200, Math.max(120, rawMs));
       st.renderer.activateEdge(effectiveFrom, to_node, frameTime, pulseMs);
-      if (msg.edge_latency_ms != null) st.renderer.addEdgeLatency(effectiveFrom, to_node, msg.edge_latency_ms);
+      if (edge_latency_ms != null) st.renderer.addEdgeLatency(effectiveFrom, to_node, edge_latency_ms);
     }
   }, [rebuildMergedEdges, recordNodeSpan, flashSpanDot]);
-
-  // ── History utilities ───────────────────────────────────────────────────────
-
-  /** Reconstruct a wire-format SpanArrivedPayload from a full SpanEvent. */
-  const spanToArrivedPayload = useCallback((
-    span: SpanEvent,
-    spanById: Map<string, SpanEvent>,
-  ): SpanArrivedPayload => {
-    const nodeId = `${span.target}::${span.name}`;
-    const parent = span.parent_span_id ? spanById.get(span.parent_span_id) : undefined;
-    const fromNode = parent ? `${parent.target}::${parent.name}` : null;
-    const edgeLatencyMs = parent
-      ? (span.start_time_unix_nano - parent.start_time_unix_nano) / 1_000_000
-      : null;
-    return {
-      trace_id:             span.trace_id,
-      span_id:              span.span_id,
-      parent_span_id:       span.parent_span_id,
-      name:                 span.name,
-      target:               span.target,
-      start_time_unix_nano: span.start_time_unix_nano,
-      end_time_unix_nano:   span.end_time_unix_nano,
-      duration_ms:          span.duration_ms,
-      status:               span.status,
-      service_name:         span.service_name,
-      instance_id:          span.instance_id,
-      from_node:            (fromNode && fromNode !== nodeId) ? fromNode : null,
-      to_node:              nodeId,
-      edge_latency_ms:      (edgeLatencyMs != null && edgeLatencyMs >= 0) ? edgeLatencyMs : null,
-    };
-  }, []);
 
   // ── Rebuild spans view and diagram after filter change ─────────────────────
 
@@ -339,17 +322,22 @@ export default function App() {
     st.renderer.clearActivity();
     st.activeExpiry    = new Map();
     st.spanVisibleNode = new Map();
+    spanIdToNodeRef.current  = new Map();
+    spanStartTimeRef.current = new Map();
     const now = performance.now();
     const traces = [...completedTracesRef.current].sort((a, b) => a.started_at - b.started_at);
     for (const trace of traces) {
-      const spanById = new Map<string, SpanEvent>(trace.spans.map(s => [s.span_id, s]));
       const sorted = [...trace.spans].sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
-      for (const span of sorted) processSpan(spanToArrivedPayload(span, spanById), now);
+      for (const span of sorted) processSpan(span, now);
       st.inFlightSpans.delete(trace.trace_id);
-      for (const s of trace.spans) st.spanVisibleNode.delete(s.span_id);
+      for (const s of trace.spans) {
+        st.spanVisibleNode.delete(s.span_id);
+        spanIdToNodeRef.current.delete(s.span_id);
+        spanStartTimeRef.current.delete(s.span_id);
+      }
       spansViewRef.current?.enrich(trace.spans);
     }
-  }, [processSpan, spanToArrivedPayload]);
+  }, [processSpan]);
 
   useEffect(() => {
     const handler = () => rebuildFromFilter();
@@ -380,37 +368,47 @@ export default function App() {
     st.selectionHL      = null;
     st.renderer.clearActivity();
 
-    // Build topology from all loaded traces
+    // Build topology from all loaded traces (same scheme as live spans_batch handler)
     const nodeMap = new Map<string, Node>();
     const edgeMap = new Map<string, Edge>();
+
+    const addHierarchyEdges = (target: string) => {
+      const parts = target.split('::');
+      for (let i = 0; i < parts.length; i++) {
+        const nodeId   = parts.slice(0, i + 1).join('::');
+        const category = parts.slice(0, Math.min(i + 1, 2)).join('::');
+        if (!nodeMap.has(nodeId)) nodeMap.set(nodeId, { id: nodeId, label: parts[i], category, span_count: 0 });
+        nodeMap.get(nodeId)!.span_count++;
+        if (i > 0) {
+          const parentId = parts.slice(0, i).join('::');
+          const ek = `${parentId}=>${nodeId}`;
+          if (!edgeMap.has(ek)) edgeMap.set(ek, { source: parentId, target: nodeId, flow_count: 0 });
+          edgeMap.get(ek)!.flow_count++;
+        }
+      }
+    };
+
     for (const trace of traces) {
-      const spanById = new Map<string, SpanEvent>(trace.spans.map(s => [s.span_id, s]));
+      const spanTargetById = new Map<string, string>(trace.spans.map(s => [s.span_id, s.target]));
       for (const span of trace.spans) {
-        const nodeId = `${span.target}::${span.name}`;
-        const n = nodeMap.get(nodeId);
-        if (n) { n.span_count++; }
-        else { nodeMap.set(nodeId, { id: nodeId, label: span.name, category: span.target, span_count: 1 }); }
+        addHierarchyEdges(span.target);
+        // Cross-target edge from span parent
         if (span.parent_span_id) {
-          const parent = spanById.get(span.parent_span_id);
-          if (parent) {
-            const parentId = `${parent.target}::${parent.name}`;
-            if (parentId !== nodeId) {
-              const ek = `${parentId}=>${nodeId}`;
-              const e = edgeMap.get(ek);
-              if (e) { e.flow_count++; }
-              else { edgeMap.set(ek, { source: parentId, target: nodeId, flow_count: 1 }); }
-            }
+          const parentTarget = spanTargetById.get(span.parent_span_id);
+          if (parentTarget && parentTarget !== span.target) {
+            const ek = `${parentTarget}=>${span.target}`;
+            if (!edgeMap.has(ek)) edgeMap.set(ek, { source: parentTarget, target: span.target, flow_count: 0 });
+            edgeMap.get(ek)!.flow_count++;
           }
         }
       }
     }
 
-    // Inject as a synthetic topology_snapshot (apply topology directly,
-    // bypassing the live-message muting check in handleMessage)
+    // Apply topology directly from history trace spans
     const nodes = Array.from(nodeMap.values());
     const edges = Array.from(edgeMap.values());
     {
-      const hiddenIds    = new Set(nodes.filter(n => isSpanHidden({ name: n.id, target: n.category })).map(n => n.id));
+      const hiddenIds    = new Set(nodes.filter(n => isSpanHidden({ name: n.label, target: n.id })).map(n => n.id));
       const visibleNodes = nodes.filter(n => !hiddenIds.has(n.id));
       const parentOf     = new Map<string, string>();
       for (const e of edges) if (!parentOf.has(e.target)) parentOf.set(e.target, e.source);
@@ -443,91 +441,106 @@ export default function App() {
   const handleMessage = useCallback((msg: WsMessage) => {
     const st = sharedRef.current;
 
-    // While in history mode, ignore live topology/span updates to avoid
+    // While in history mode, ignore live span/trace updates to avoid
     // polluting the history view. WS stays connected so we can resume live
     // instantly when the user toggles history off.
     if (historyEnabledRef.current) {
-      if (msg.type === 'topology_snapshot' || msg.type === 'topology_updated' ||
-          msg.type === 'spans_batch' || msg.type === 'trace_completed') {
-        return;
-      }
+      if (msg.type === 'spans_batch') return;
     }
 
     switch (msg.type) {
-      case 'topology_snapshot':
-      case 'topology_updated': {
-        const hiddenIds    = new Set(msg.nodes.filter(n => isSpanHidden({ name: n.id, target: n.category })).map(n => n.id));
-        const visibleNodes = msg.nodes.filter(n => !hiddenIds.has(n.id));
-        const parentOf     = new Map<string, string>();
-        for (const e of msg.edges) if (!parentOf.has(e.target)) parentOf.set(e.target, e.source);
-
-        function nearestVisibleAncestor(id: string): string | null {
-          let cur = parentOf.get(id);
-          while (cur !== undefined) {
-            if (!hiddenIds.has(cur)) return cur;
-            cur = parentOf.get(cur);
-          }
-          return null;
-        }
-
-        const reWiredEdges: Edge[] = [];
-        const edgeSet = new Set<string>();
-        for (const e of msg.edges) {
-          if (hiddenIds.has(e.target)) continue;
-          const effectiveSrc = hiddenIds.has(e.source) ? nearestVisibleAncestor(e.source) : e.source;
-          if (!effectiveSrc || effectiveSrc === e.target) continue;
-          const key = `${effectiveSrc}=>${e.target}`;
-          if (!edgeSet.has(key)) { edgeSet.add(key); reWiredEdges.push({ source: effectiveSrc, target: e.target, flow_count: e.flow_count }); }
-        }
-
-        st.layout.upsert(visibleNodes);
-        st.serverEdges = reWiredEdges;
-        // Clear ALL client-derived edges so stale span edges from the previous
-        // topology (e.g. after a depth change) don't survive the snapshot.
-        st.clientEdgeMap = new Map();
-        rebuildMergedEdges();
-        for (const n of visibleNodes) targetColor(n.category);
-        tracesPanelRef.current?.setMermaidDirty();
-
-        if (visibleNodes.length > 0) setHasData(true);
-        break;
-      }
-
-      case 'spans_batch':
+      case 'spans_batch': {
         if (msg.spans.length > 0) setHasReceivedTraces(true);
+
+        // ── Build topology incrementally from spans ─────────────────────────────────────
+
+        // Index this batch's span_id → node_id first (two-pass within the batch)
+        // so cross-span parent references resolve correctly.
+        // Node ID = span.target: one node per module/component, depth from '::' segments.
+        const batchNodeId = new Map<string, string>();
+        for (const s of msg.spans) {
+          const nodeId = s.target;
+          batchNodeId.set(s.span_id, nodeId);
+          spanIdToNodeRef.current.set(s.span_id, nodeId);
+        }
+
+        const newNodes: Node[] = [];
+        const newEdges: Edge[] = [];
+        const st = sharedRef.current;
+
+        // Helper: ensure a node exists and add target-hierarchy edges
+        // e.g. 'amaru::chain::validation' adds nodes+edges for each prefix
+        // category = up to 2 '::' levels of the node's own id, so colors match legend
+        const ensureTargetPath = (target: string) => {
+          const parts = target.split('::');
+          for (let i = 0; i < parts.length; i++) {
+            const nodeId   = parts.slice(0, i + 1).join('::');
+            const category = parts.slice(0, Math.min(i + 1, 2)).join('::');
+            if (!st.layout.nodes.has(nodeId) && !newNodes.some(n => n.id === nodeId)) {
+              newNodes.push({ id: nodeId, label: parts[i], category, span_count: 1 });
+            }
+            if (i > 0) {
+              const parentId = parts.slice(0, i).join('::');
+              if (!st.serverEdges.some(e => e.source === parentId && e.target === nodeId) &&
+                  !newEdges.some(e => e.source === parentId && e.target === nodeId)) {
+                if (!edgeWouldCreateCycle(parentId, nodeId, [...st.serverEdges, ...newEdges])) {
+                  newEdges.push({ source: parentId, target: nodeId, flow_count: 1 });
+                }
+              }
+            }
+          }
+        };
+
+        for (const s of msg.spans) {
+          const nodeId = s.target;
+          ensureTargetPath(s.target);
+          // Cross-target edges from span parent_span_id
+          if (s.parent_span_id) {
+            const parentNodeId = batchNodeId.get(s.parent_span_id)
+              ?? spanIdToNodeRef.current.get(s.parent_span_id);
+            if (parentNodeId && parentNodeId !== nodeId) {
+              if (!st.serverEdges.some(e => e.source === parentNodeId && e.target === nodeId) &&
+                  !newEdges.some(e => e.source === parentNodeId && e.target === nodeId)) {
+                if (!edgeWouldCreateCycle(parentNodeId, nodeId, [...st.serverEdges, ...newEdges])) {
+                  newEdges.push({ source: parentNodeId, target: nodeId, flow_count: 1 });
+                }
+              }
+            }
+          }
+        }
+
+        if (newNodes.length > 0 || newEdges.length > 0) {
+          const hiddenIds = new Set(newNodes.filter(n => isSpanHidden({ name: n.label, target: n.id })).map(n => n.id));
+          const visibleNodes = newNodes.filter(n => !hiddenIds.has(n.id));
+          st.layout.upsert(visibleNodes);
+          for (const n of visibleNodes) targetColor(n.category);
+          for (const e of newEdges) {
+            if (!hiddenIds.has(e.source) && !hiddenIds.has(e.target)) {
+              st.serverEdges.push(e);
+              st.clientEdgeMap.delete(`${e.source}=>${e.target}`);
+            }
+          }
+          rebuildMergedEdges();
+          tracesPanelRef.current?.setMermaidDirty();
+          if (visibleNodes.length > 0) setHasData(true);
+        }
+
         for (const item of msg.spans) st.spanQueue.push(item);
         break;
-
-      case 'trace_completed': {
-        const t = msg.trace;
-        st.inFlightSpans.delete(t.trace_id);
-        for (const s of t.spans) st.spanVisibleNode.delete(s.span_id);
-        spansViewRef.current?.enrich(t.spans);
-        if (hiddenRules.length && t.spans.every(s => isSpanHidden(s))) break;
-        st.tracesThisSecond++;
-        tracesPanelRef.current?.onTraceCompleted(t, activeTabRef.current);
-        setCompletedTraces(prev => {
-          const cutoff = (Date.now() - STATS_WINDOW_MS) * 1_000_000;
-          const filtered = prev.filter(tr => tr.started_at >= cutoff);
-          return [...filtered, t];
-        });
-        setHasData(true);
-        break;
       }
 
-      case 'stats':
-        break;
     }
   }, [rebuildMergedEdges]);
 
   // ── WS status handler ────────────────────────────────────────────────────────
   const handleStatus = useCallback((connected: boolean) => {
+    wsConnectedRef.current = connected;
     if (demoModeRef.current) return;
     setWsConnected(connected);
   }, []);
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
-  const { sendMessage: wsSend } = useWebSocket({ url: WS_URL, onMessage: handleMessage, onStatus: handleStatus });
+  useWebSocket({ url: WS_URL, onMessage: handleMessage, onStatus: handleStatus });
 
   // ── rAF frame loop (span queue drain + rate metrics) ───────────────────────
   useEffect(() => {
@@ -547,6 +560,38 @@ export default function App() {
           const staggerMs = ((m.start_time_unix_nano - minNs) / rangeNs) * 300;
           processSpan(m, now + staggerMs);
         }
+
+        // Finalize any completed traces (root span signals completion)
+        for (const m of pending) {
+          if (m.parent_span_id !== null) continue;
+          const spans = st.inFlightSpans.get(m.trace_id) ?? [];
+          st.inFlightSpans.delete(m.trace_id);
+          for (const s of spans) {
+            st.spanVisibleNode.delete(s.span_id);
+            spanIdToNodeRef.current.delete(s.span_id);
+            spanStartTimeRef.current.delete(s.span_id);
+          }
+          spansViewRef.current?.enrich(spans);
+          if (hiddenRules.length && spans.every(s => isSpanHidden(s))) continue;
+          st.tracesThisSecond++;
+          const root = spans.find(s => s.parent_span_id === null) ?? m;
+          const startedAt = spans.reduce((acc, s) => Math.min(acc, s.start_time_unix_nano), Infinity);
+          const endedAt   = spans.reduce((acc, s) => Math.max(acc, s.end_time_unix_nano), -Infinity);
+          const trace: TraceComplete = {
+            trace_id:       m.trace_id,
+            spans,
+            root_span_name: root.name,
+            duration_ms:    startedAt === Infinity ? 0 : (endedAt - startedAt) / 1_000_000,
+            started_at:     startedAt === Infinity ? 0 : startedAt,
+            instance_id:    root.instance_id ?? '',
+          };
+          tracesPanelRef.current?.onTraceCompleted(trace, activeTabRef.current);
+          setCompletedTraces(prev => {
+            const cutoff = (Date.now() - STATS_WINDOW_MS) * 1_000_000;
+            return [...prev.filter(tr => tr.started_at >= cutoff), trace];
+          });
+          setHasData(true);
+        }
       }
 
       // History mode: replay traces that the cursor has crossed this frame
@@ -564,16 +609,21 @@ export default function App() {
             st.inFlightSpans   = new Map();
             st.spanVisibleNode = new Map();
             st.activeExpiry    = new Map();
+            spanIdToNodeRef.current  = new Map();
+            spanStartTimeRef.current = new Map();
           }
           const fromNs = backward ? historyPlayback.range.from - 1 : prev;
           const newlyVisible: TraceComplete[] = [];
           for (const trace of historyPlayback.traces) {
             if (trace.started_at > fromNs && trace.started_at <= cursor) {
-              const spanById = new Map<string, SpanEvent>(trace.spans.map(s => [s.span_id, s]));
               const sorted = [...trace.spans].sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
-              for (const span of sorted) processSpan(spanToArrivedPayload(span, spanById), now);
+              for (const span of sorted) processSpan(span, now);
               st.inFlightSpans.delete(trace.trace_id);
-              for (const s of trace.spans) st.spanVisibleNode.delete(s.span_id);
+              for (const s of trace.spans) {
+                st.spanVisibleNode.delete(s.span_id);
+                spanIdToNodeRef.current.delete(s.span_id);
+                spanStartTimeRef.current.delete(s.span_id);
+              }
               spansViewRef.current?.enrich(trace.spans);
               tracesPanelRef.current?.onTraceCompleted(trace, activeTabRef.current);
               newlyVisible.push(trace);
@@ -588,13 +638,13 @@ export default function App() {
           // Pin the current cursor trace so its nodes/edges stay lit in the diagram
           const cursorTrace = historyPlayback.traces[historyPlayback.cursorIndexRef.current];
           if (cursorTrace) {
-            const spanById = new Map<string, SpanEvent>(cursorTrace.spans.map(s => [s.span_id, s]));
             const nodeIds  = new Set<string>();
             const edgeKeys = new Set<string>();
             for (const span of cursorTrace.spans) {
-              const p = spanToArrivedPayload(span, spanById);
-              nodeIds.add(p.to_node);
-              if (p.from_node && p.from_node !== p.to_node) edgeKeys.add(`${p.from_node}=>${p.to_node}`);
+              const toNode   = `${span.target}::${span.name}`;
+              const fromNode = span.parent_span_id ? spanIdToNodeRef.current.get(span.parent_span_id) : undefined;
+              nodeIds.add(toNode);
+              if (fromNode && fromNode !== toNode) edgeKeys.add(`${fromNode}=>${toNode}`);
             }
             st.renderer.pinTrace(nodeIds, edgeKeys);
           }

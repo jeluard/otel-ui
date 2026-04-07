@@ -1,6 +1,6 @@
 // ── Demo mode: generates representative trace data for preview ─────────────
 
-import type { WsMessage, Node, SpanEvent, Edge, TraceComplete } from './types.ts';
+import type { WsMessage, SpanEvent, TraceComplete } from './types.ts';
 
 export type DemoScenario = 'standard' | 'multi-instance';
 
@@ -42,7 +42,7 @@ export interface DemoConfig {
 
 export const DEFAULT_DEMO_CONFIG: DemoConfig = {
   tracesPerSec: 3.3,
-  maxDepth:     3,
+  maxDepth:     4,
   maxFanout:    3,
   errorRate:    0.05,
   outlierRate:  0.10,
@@ -68,12 +68,12 @@ export function setDemoConfig(next: DemoConfig): void {
   }
   if (prevDepth !== next.maxDepth && _liveOnMessage !== null) {
     if (_liveScenario === 'multi-instance') {
-      _liveOnMessage(buildMultiInstanceTopology(_miWorkerCount, next.maxDepth));
+      buildMultiInstanceTopology(_miWorkerCount, next.maxDepth);
     } else {
       const prevTier = Math.min(prevDepth - 1, 5);
       const nextTier = Math.min(next.maxDepth - 1, 5);
       if (prevTier !== nextTier) {
-        _liveOnMessage(generateTopologyForDepth(next.maxDepth));
+        generateTopologyForDepth(next.maxDepth);
       }
     }
   }
@@ -144,11 +144,11 @@ function generateTrace(traceId: string, startNs?: number, tiered = false): Trace
     const totalW    = weights.reduce((a, b) => a + b, 0);
     let cursor = startNs + PAD_NS;
 
-    // In tiered mode children must come from a strictly deeper tier so edges
-    // always go forward — this guarantees a DAG with clear BFS roots.
+    // In tiered mode children must come from the immediately next tier so the
+    // DAG has a clear column-per-tier structure in the layout.
     const myTier = SERVICE_TIER[type] ?? 0;
     const others = tiered
-      ? demoInstances.filter(i => (SERVICE_TIER[i.type] ?? 0) > myTier)
+      ? demoInstances.filter(i => (SERVICE_TIER[i.type] ?? 0) === myTier + 1)
       : demoInstances.filter(i => i.id !== instanceId);
     if (others.length === 0) return; // no deeper tier available
     for (let i = 0; i < childCount; i++) {
@@ -175,8 +175,8 @@ function generateTrace(traceId: string, startNs?: number, tiered = false): Trace
 }
 
 /**
- * Build a topology_snapshot containing only the service tiers reachable at
- * the given maxDepth, using SERVICE_TIER for consistent tier assignment.
+ * Update the set of active demo service instances for the given maxDepth.
+ * Topology is no longer pre-seeded — the frontend builds it from spans.
  *   maxDepth 1 → api only
  *   maxDepth 2 → + auth / queue (tier 1)
  *   maxDepth 3 → + database / cache (tier 2)
@@ -184,12 +184,9 @@ function generateTrace(traceId: string, startNs?: number, tiered = false): Trace
  *   maxDepth 5 → + storage (tier 4)
  *   maxDepth 6 → + monitor (tier 5, all services)
  */
-function generateTopologyForDepth(maxDepth: number): WsMessage {
+function generateTopologyForDepth(maxDepth: number): void {
   const maxTier = Math.min(maxDepth - 1, 5);
 
-  // Group service types by their SERVICE_TIER value
-  // Fixed counts per service type keep node IDs stable across re-emits so that
-  // depth changes show clear additions/removals rather than ID churn.
   const INSTANCE_COUNT: Record<ServiceType, number> = {
     api: 1, auth: 1, queue: 1, database: 2, cache: 1, worker: 2, storage: 1, monitor: 1,
   };
@@ -205,81 +202,7 @@ function generateTopologyForDepth(maxDepth: number): WsMessage {
     }
   }
 
-  const tiers = [...tierGroups.keys()].sort((a, b) => a - b).map(t => tierGroups.get(t)!);
-  demoInstances = tiers.flat();
-
-  const nodes: Node[] = demoInstances.map(inst => ({
-    id:         inst.id,
-    category:   inst.type,
-    label:      inst.id,
-    span_count: 0,
-  }));
-
-  const edges: Edge[] = [];
-  for (let t = 0; t < tiers.length - 1; t++) {
-    const srcIds = tiers[t].map(n => n.id);
-    const dstIds = tiers[t + 1].map(n => n.id);
-
-    // Round-robin over srcs while iterating shuffled dsts ensures
-    // every dst gets ≥1 incoming edge and every src gets ≥1 outgoing edge.
-    const shuffled    = [...dstIds].sort(() => Math.random() - 0.5);
-    const coveredSrcs = new Set<string>();
-    for (let i = 0; i < shuffled.length; i++) {
-      const src = srcIds[i % srcIds.length];
-      edges.push({ source: src, target: shuffled[i], flow_count: Math.floor(Math.random() * 90) + 10 });
-      coveredSrcs.add(src);
-    }
-    for (const src of srcIds) {
-      if (!coveredSrcs.has(src)) {
-        edges.push({ source: src, target: randomChoice(dstIds), flow_count: Math.floor(Math.random() * 90) + 10 });
-      }
-    }
-  }
-
-  return { type: 'topology_snapshot', nodes, edges };
-}
-
-/** Full-topology snapshot (all service tiers). Used for history-mode seeding. */
-export function generateTopologySnapshot(): WsMessage {
-  return generateTopologyForDepth(6);
-}
-
-/**
- * Generate a trace_completed message with demo data.
- */
-export function generateTraceCompleted(): { type: 'trace_completed'; trace: TraceComplete } {
-  const trace = generateTrace(randomId('trace_'));
-  return {
-    type: 'trace_completed',
-    trace,
-  };
-}
-
-/**
- * Convert SpanEvent[] to SpanArrivedPayload[] for the spans_batch message.
- * Fills in routing fields (to_node / from_node) using service_name.
- */
-function toSpansBatch(spans: SpanEvent[]): WsMessage {
-  const spanServiceMap = new Map<string, string>();
-  for (const s of spans) spanServiceMap.set(s.span_id, s.service_name);
-
-  const payloads = spans.map(s => ({
-    trace_id:             s.trace_id,
-    span_id:              s.span_id,
-    parent_span_id:       s.parent_span_id,
-    name:                 s.name,
-    target:               s.target,
-    start_time_unix_nano: s.start_time_unix_nano,
-    end_time_unix_nano:   s.end_time_unix_nano,
-    duration_ms:          s.duration_ms,
-    status:               s.status,
-    service_name:         s.service_name,
-    instance_id:          s.instance_id,
-    to_node:              s.service_name,
-    from_node:            s.parent_span_id ? (spanServiceMap.get(s.parent_span_id) ?? null) : null,
-    edge_latency_ms:      null,
-  }));
-  return { type: 'spans_batch', spans: payloads };
+  demoInstances = [...tierGroups.keys()].sort((a, b) => a - b).flatMap(t => tierGroups.get(t)!);
 }
 
 /**
@@ -304,16 +227,12 @@ const MI_COORD     = 'instance.0';
 const MI_WORKERS   = ['instance.1', 'instance.2', 'instance.3', 'instance.4'];
 
 /**
- * Build a multi-instance topology snapshot.
- * Worker count is fixed per session; sub-services are added based on depth:
- *   depth 1–2  → coordinator + workers only
- *   depth 3–4  → + database-1, database-2, cache
- *   depth 5–6  → + storage, monitor
+ * Update demoInstances to reflect the multi-instance topology for the given
+ * worker count and depth. Topology is built by the frontend from emitted spans.
  */
-function buildMultiInstanceTopology(workerCount: number, depth: number): WsMessage {
+function buildMultiInstanceTopology(workerCount: number, depth: number): void {
   const activeWorkers = MI_WORKERS.slice(0, workerCount);
 
-  // Sub-services visible as call targets (deeper tiers unlock with depth).
   const subInstances: ServiceInstance[] = [];
   if (depth >= 3) {
     subInstances.push(
@@ -334,31 +253,11 @@ function buildMultiInstanceTopology(workerCount: number, depth: number): WsMessa
     ...activeWorkers.map(w => ({ id: w, type: 'worker' as ServiceType })),
     ...subInstances,
   ];
-
-  // Diagram nodes use service names (matching span.service_name / to_node),
-  // not instance IDs.  All worker instances share a single 'worker' node.
-  const subServiceTypes = [...new Set(subInstances.map(s => s.type))];
-  const nodes: Node[] = [
-    { id: 'block_processor', category: 'api',    label: 'block_processor', span_count: 0 },
-    { id: 'worker',          category: 'worker', label: 'worker',          span_count: 0 },
-    ...subServiceTypes.map(t => ({ id: t, category: t, label: t, span_count: 0 })),
-  ];
-
-  const edges: Edge[] = [
-    { source: 'block_processor', target: 'worker',
-      flow_count: Math.floor(Math.random() * 90) + 10 },
-    ...subServiceTypes.map(t => ({
-      source: 'worker', target: t,
-      flow_count: Math.floor(Math.random() * 50) + 5,
-    })),
-  ];
-
-  return { type: 'topology_snapshot', nodes, edges };
 }
 
-function generateMultiInstanceTopology(): WsMessage {
-  _miWorkerCount = Math.floor(Math.random() * 3) + 2; // 2–4, random, fixed for session
-  return buildMultiInstanceTopology(_miWorkerCount, _cfg.maxDepth);
+function generateMultiInstanceTopology(): void {
+  _miWorkerCount = Math.floor(Math.random() * 3) + 2;
+  buildMultiInstanceTopology(_miWorkerCount, _cfg.maxDepth);
 }
 
 /**
@@ -472,7 +371,7 @@ function generateMultiInstanceTrace(): TraceComplete {
 function startMultiInstanceDemo(onMessage: (msg: WsMessage) => void): () => void {
   _liveScenario  = 'multi-instance';
   _liveOnMessage = onMessage;
-  onMessage(generateMultiInstanceTopology());
+  generateMultiInstanceTopology();
 
   function emitBlock() {
     const trace = generateMultiInstanceTrace();
@@ -484,8 +383,7 @@ function startMultiInstanceDemo(onMessage: (msg: WsMessage) => void): () => void
       if (!byInst.has(iid)) { byInst.set(iid, []); instOrder.push(iid); }
       byInst.get(iid)!.push(s);
     }
-    for (const iid of instOrder) onMessage(toSpansBatch(byInst.get(iid)!));
-    onMessage({ type: 'trace_completed', trace });
+    for (const iid of instOrder) onMessage({ type: 'spans_batch', spans: byInst.get(iid)! });
   }
 
   const intervalMs    = Math.round(1000 / _cfg.tracesPerSec);
@@ -512,14 +410,11 @@ export function startDemo(onMessage: (msg: WsMessage) => void, scenario: DemoSce
   if (scenario === 'multi-instance') return startMultiInstanceDemo(onMessage);
   _liveScenario  = 'standard';
   _liveOnMessage = onMessage;
-  // Send initial topology sized to the current depth config
-  onMessage(generateTopologyForDepth(_cfg.maxDepth));
+  generateTopologyForDepth(_cfg.maxDepth);
 
   function emitTrace() {
-    const traceMsg = generateTraceCompleted();
-    // Fire spans_batch first so nodes/edges animate, then complete the trace
-    onMessage(toSpansBatch(traceMsg.trace.spans));
-    onMessage(traceMsg);
+    const trace = generateTrace(randomId('trace_'), undefined, true);
+    onMessage({ type: 'spans_batch', spans: trace.spans });
   }
 
   const intervalMs   = Math.round(1000 / _cfg.tracesPerSec);

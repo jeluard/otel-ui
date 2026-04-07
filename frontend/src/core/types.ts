@@ -1,4 +1,4 @@
-// ── Types matching the Rust backend WsMessage enum ──────────────────────────
+// ── Types ────────────────────────────────────────────────────────────────────
 
 export interface SpanEvent {
   trace_id: string;
@@ -37,29 +37,8 @@ export interface TraceComplete {
   instance_id: string;
 }
 
-export interface SpanArrivedPayload {
-  trace_id: string;
-  span_id: string;
-  parent_span_id: string | null;
-  name: string;
-  target: string;
-  start_time_unix_nano: number;
-  end_time_unix_nano: number;
-  duration_ms: number;
-  status: string;
-  service_name: string;
-  instance_id?: string;
-  from_node: string | null;
-  to_node: string;
-  edge_latency_ms: number | null;
-}
-
 export type WsMessage =
-  | { type: 'topology_snapshot'; nodes: Node[]; edges: Edge[] }
-  | { type: 'spans_batch'; spans: SpanArrivedPayload[] }
-  | { type: 'trace_completed'; trace: TraceComplete }
-  | { type: 'topology_updated'; nodes: Node[]; edges: Edge[] }
-  | { type: 'stats'; total_traces: number; spans_per_second: number; active_nodes: number; timestamp: number };
+  | { type: 'spans_batch'; spans: SpanEvent[] };
 
 export interface TraceBounds {
   min_started_at: number;

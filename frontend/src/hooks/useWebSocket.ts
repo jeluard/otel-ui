@@ -10,9 +10,8 @@ interface UseWebSocketOptions {
   onStatus: (connected: boolean) => void;
 }
 
-/** Starts and manages a WsClient instance. Reconnects automatically.
- *  Returns a `sendMessage` function for sending text frames to the server. */
-export function useWebSocket({ url, onMessage, onStatus }: UseWebSocketOptions): { sendMessage: (text: string) => void } {
+/** Starts and manages a WsClient instance. Reconnects automatically. */
+export function useWebSocket({ url, onMessage, onStatus }: UseWebSocketOptions): void {
   // Stable refs so we never need to restart the client when callbacks change
   const onMessageRef = useRef(onMessage);
   const onStatusRef  = useRef(onStatus);
@@ -30,8 +29,4 @@ export function useWebSocket({ url, onMessage, onStatus }: UseWebSocketOptions):
     client.start();
     return () => { client.destroy(); clientRef.current = null; };
   }, [url]);
-
-  return {
-    sendMessage: (text: string) => clientRef.current?.send(text),
-  };
 }

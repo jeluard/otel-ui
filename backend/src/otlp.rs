@@ -1,5 +1,5 @@
-/// OTLP gRPC server — receives spans from the OpenTelemetry Collector
-/// and feeds them into the shared AppState.
+//! OTLP gRPC server — receives spans from the OpenTelemetry Collector
+//! and feeds them into the shared AppState.
 
 use std::sync::Arc;
 
@@ -13,7 +13,7 @@ use opentelemetry_proto::tonic::{
 use tonic::{transport::Server, Request, Response, Status};
 use tracing::info;
 
-use crate::state::{AppState, SpanEvent, SpanArrivedPayload, WsMessage};
+use crate::state::{AppState, SpanEvent, WsMessage};
 
 pub struct OtlpTraceReceiver {
     state: Arc<AppState>,
@@ -130,42 +130,30 @@ impl TraceService for OtlpTraceReceiver {
             }
         }
 
-        // ── Pass 1: pre-index every span_id in this batch ─────────────────────
-        // Pre-indexing name AND start-time here avoids two DashMap writes per
-        // span inside ingest_span (which runs in the hot loop).
-        for s in &batch {
-            // Index the composite node_id (target::name) so parent-edge discovery
-            // in ingest_span resolves to the same qualified ID.
-            self.state.span_name_index.insert(s.span_id.clone(), format!("{}::{}", s.target, s.name));
-            self.state.span_start_index.insert(s.span_id.clone(), s.start_time_unix_nano);
-        }
-
-        // ── Pass 2+3: ingest spans and collect root trace IDs ─────────────────
-        // Consuming the batch (`into_iter`) avoids cloning each SpanEvent,
-        // which includes an expensive `HashMap<String, serde_json::Value>`.
-        // Root trace IDs are noted here so we can finalise traces below
-        // without a second pass over the batch.
-        let mut payloads: Vec<SpanArrivedPayload> = Vec::with_capacity(batch.len());
+        // ── Collect root trace IDs, broadcast, store in in_flight ─────────────
         let mut root_trace_ids: Vec<String> = Vec::new();
-        for s in batch {
+        for s in &batch {
+            self.state.total_spans.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if s.parent_span_id.is_none() {
                 root_trace_ids.push(s.trace_id.clone());
             }
-            payloads.push(self.state.ingest_span(s));
         }
 
-        // ── Single broadcast for the whole batch (one serialization, one wake-up per WS client) ─
-        if !payloads.is_empty() {
-            let msg = WsMessage::SpansBatch { spans: payloads };
+        // Broadcast full spans (clone needed; original moves into in_flight below)
+        if !batch.is_empty() {
+            let msg = WsMessage::SpansBatch { spans: batch.clone() };
             if let Ok(json) = serde_json::to_string(&msg) {
                 let _ = self.state.broadcast.send(Arc::new(json));
             }
         }
 
-        // ── Topology update: at most once per 500 ms, once per batch ──────────
-        // Moved out of ingest_span so SystemTime::now() is called once here
-        // instead of N times (once per span) in the hot loop.
-        self.state.maybe_broadcast_topology();
+        // Store in in_flight for SQLite persistence on trace completion
+        for s in batch {
+            self.state.in_flight
+                .entry(s.trace_id.clone())
+                .or_default()
+                .insert(s.span_id.clone(), s);
+        }
 
         // ── Finalise completed traces ──────────────────────────────────────────
         for trace_id in root_trace_ids {
@@ -204,7 +192,7 @@ fn kv_to_string(value: &Option<AnyValue>) -> String {
 
 pub async fn run_otlp_server(state: Arc<AppState>, addr: &str) -> anyhow::Result<()> {
     let addr = addr.parse()?;
-    info!("OTLP gRPC server listening on {}", addr);
+    info!("OTLP gRPC receiver on {} (point your collector here)", addr);
 
     let receiver = OtlpTraceReceiver { state };
 

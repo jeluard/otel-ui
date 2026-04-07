@@ -120,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Start the HTTP / WebSocket server
-    info!("Starting HTTP/WebSocket server on {}", args.http_addr);
+    info!("Starting otel-ui backend on {}", args.http_addr);
     ws::run_http_server(state, &args.http_addr).await?;
 
     Ok(())

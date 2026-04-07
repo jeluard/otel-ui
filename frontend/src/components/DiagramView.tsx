@@ -171,6 +171,7 @@ const DiagramView = forwardRef<DiagramViewHandle, DiagramViewProps>(
             !st.layout.isSettled      ||
             st.activeExpiry.size > 0  ||
             hoveredNodeIdRef.current !== null ||
+            selectedNodeIdRef.current !== null ||
             st.renderer.hasActiveAnimations(now);
 
           if (diagramActive || (mmTick % 4) === 0) {

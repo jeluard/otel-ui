@@ -277,9 +277,8 @@ export class TracesTable {
     this.detailPanel.style.display = 'none';
   }
 
-  /** Back-fill attributes (and other fields) from a completed trace into any
-   * already-stored spans that were added via SpanArrivedPayload (which carries
-   * no attributes). This makes the detail panel show full span fields. */
+  /** Back-fill attributes from a completed trace into already-stored spans.
+   * This makes the detail panel show full span fields. */
   enrich(spans: SpanEvent[]): void {
     const byId = new Map<string, SpanEvent>();
     for (const s of spans) byId.set(s.span_id, s);

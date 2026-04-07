@@ -1,4 +1,4 @@
-/// SQLite persistence layer for completed traces.
+//! SQLite persistence layer for completed traces.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -135,8 +135,10 @@ impl Db {
         let mut traces = Vec::new();
         for row in rows {
             let (trace_id, root_span_name, duration_ms, started_at, spans_json, instance_id) = row?;
-            let spans: Vec<SpanEvent> =
-                serde_json::from_str(&spans_json).unwrap_or_default();
+            let spans: Vec<SpanEvent> = match serde_json::from_str(&spans_json) {
+                Ok(s) => s,
+                Err(_) => continue, // skip rows from old incompatible format
+            };
             traces.push(TraceComplete {
                 trace_id,
                 spans,

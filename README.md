@@ -36,11 +36,11 @@ A real-time OTel UI providing insights of what is going on inside your process.
 
 ```bash
 # One-command dev mode
-make dev
+make dev-all
 
 # Or individually:
-make dev-backend   # Rust backend on :8080
-make dev-frontend  # esbuild dev server on :3000
+make dev-backend   # Rust backend on :8081
+make dev-frontend  # esbuild dev server on :8080
 ```
 
 Override the WebSocket endpoint at runtime via the URL hash:

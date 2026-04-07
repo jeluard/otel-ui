@@ -193,8 +193,6 @@ export class Layout {
   }
 
   upsert(nodes: Node[]) {
-    const existing = new Set(this.nodes.keys());
-
     for (const n of nodes) {
       if (!this.nodes.has(n.id)) {
         this.nodes.set(n.id, {
@@ -210,9 +208,7 @@ export class Layout {
         ln.span_count = n.span_count;
         ln.category   = n.category;
       }
-      existing.delete(n.id);
     }
-    for (const id of existing) this.nodes.delete(id);
   }
 
   /**

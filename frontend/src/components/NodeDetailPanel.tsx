@@ -263,7 +263,7 @@ const NodeDetailPanel = forwardRef<NodeDetailPanelHandle, NodeDetailPanelProps>(
           <thead>
             <tr>
               <th>Time</th>
-              <th>Trace</th>
+              <th>Span</th>
               <th>Duration</th>
               <th>Status</th>
             </tr>
@@ -281,7 +281,7 @@ const NodeDetailPanel = forwardRef<NodeDetailPanelHandle, NodeDetailPanelProps>(
                 return (
                   <tr key={s.span_id}>
                     <td className="nd-time">{fmtTime(s.start_time_unix_nano)}</td>
-                    <td className="nd-trace" title={s.trace_id}>{s.trace_id.slice(0, 12)}…</td>
+                    <td className="nd-trace" title={s.name}>{s.name}</td>
                     <td className="nd-dur">{fmtDur(s.duration_ms)}</td>
                     <td style={{ color: statusColor }}>{s.status || '—'}</td>
                   </tr>
