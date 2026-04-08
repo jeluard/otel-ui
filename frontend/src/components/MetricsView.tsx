@@ -97,7 +97,7 @@ const SERIES_COLORS = [
 ];
 
 let _seq = 0;
-const mkId = () => `panel-${++_seq}`;
+const mkId = () => `panel-${Date.now()}-${++_seq}`;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -130,8 +130,9 @@ function buildData(
   const cutoff = now - windowSec;
 
   const tsSet = new Set<number>();
-  tsSet.add(cutoff); // anchor left edge
-  tsSet.add(now);    // anchor right edge
+  tsSet.add(cutoff); // anchor left edge so the window doesn't shrink
+  // Note: no right anchor — setScale() pins the visible range; avoiding a data
+  // point at exactly `now` prevents a tick label from being forced to the edge.
   for (const k of seriesKeys) {
     const b = buffers.get(k);
     if (b) for (const t of b.times) { if (t >= cutoff) tsSet.add(t); }
@@ -149,11 +150,52 @@ function buildData(
   return [times, ...ys] as unknown as uPlot.AlignedData;
 }
 
+function fmtBytes(v: number): string {
+  if (v === null || v === undefined) return '';
+  const abs = Math.abs(v);
+  if (abs >= 1e9)  return (v / 1e9).toPrecision(3)  + ' GB';
+  if (abs >= 1e6)  return (v / 1e6).toPrecision(3)  + ' MB';
+  if (abs >= 1e3)  return (v / 1e3).toPrecision(3)  + ' kB';
+  return v.toFixed(0) + ' B';
+}
+
+function fmtSeconds(v: number): string {
+  if (v === null || v === undefined) return '';
+  const abs = Math.abs(v);
+  if (abs >= 3600) {
+    const h   = Math.floor(abs / 3600);
+    const min = Math.floor((abs % 3600) / 60);
+    return min > 0 ? `${h}h ${min}min` : `${h}h`;
+  }
+  if (abs >= 60) {
+    const min = Math.floor(abs / 60);
+    const sec = Math.round(abs % 60);
+    return sec > 0 ? `${min}min ${sec}s` : `${min}min`;
+  }
+  return v.toPrecision(3) + ' s';
+}
+
+function fmtPercent(v: number): string {
+  if (v === null || v === undefined) return '';
+  return v.toPrecision(3) + ' %';
+}
+
+function yFormatter(unit: string): (v: number) => string {
+  const u = unit.toLowerCase();
+  if (u === 'bytes' || u === 'by')  return fmtBytes;
+  if (u === '%' || u === '1')       return fmtPercent;
+  if (u === 's' || u === 'seconds') return fmtSeconds;
+  // default: locale number with spaces as thousand separators
+  return (v: number) => v == null ? '' : v.toLocaleString('fr-FR');
+}
+
 function makeUPlotOpts(
   width: number,
   seriesKeys: string[],
   catalog: Map<string, SeriesMeta>,
 ): uPlot.Options {
+  const firstUnit = catalog.get(seriesKeys[0])?.unit ?? '';
+  const fmtY = yFormatter(firstUnit);
   return {
     width,
     height: 220,
@@ -175,27 +217,33 @@ function makeUPlotOpts(
     axes: [
       {
         stroke: '#475569',
+        font:   '11px "JetBrains Mono", monospace',
         grid:  { stroke: 'rgba(255,255,255,0.05)', width: 1 },
         ticks: { stroke: 'rgba(255,255,255,0.05)', width: 1 },
-        space: 60,
+        incrs: [60, 120, 300],
         values: (_u: uPlot, splits: number[]) =>
           splits.map((s: number) =>
             new Date(s * 1000).toLocaleTimeString('en-GB', {
-              hour: '2-digit', minute: '2-digit', second: '2-digit',
+              hour: '2-digit', minute: '2-digit',
             }),
           ),
         size: 36,
       },
       {
         stroke: '#475569',
+        font:   '11px "JetBrains Mono", monospace',
         grid:  { stroke: 'rgba(255,255,255,0.05)', width: 1 },
         ticks: { stroke: 'rgba(255,255,255,0.05)', width: 1 },
-        size:  56,
+        values: (_u: uPlot, splits: number[]) => splits.map(fmtY),
+        size: 88,
       },
     ],
-    cursor: { show: true },
+    cursor: { show: false },
     legend: { show: false }, // we render our own colour legend
-    padding: [12, 8, 16, 0],
+    // padding: [top, right, bottom, left]
+    // right = half of "HH:MM:SS" label width at 11px mono (~36px) + 8px safety
+    // left  = small gap so data doesn't touch the y-axis line
+    padding: [12, 44, 16, 4],
   };
 }
 
@@ -207,12 +255,13 @@ interface ChartPanelProps {
   buffersRef:     React.MutableRefObject<Map<string, Buffer>>;
   plotsRef:       React.MutableRefObject<Map<string, uPlot>>;
   windowSecRef:   React.MutableRefObject<number>;
+  panelElRef:     React.RefCallback<HTMLDivElement>;
   onRemovePanel:  (id: string) => void;
   onRemoveSeries: (panelId: string, key: string) => void;
 }
 
 const ChartPanel = React.memo(function ChartPanel({
-  panel, catalog, buffersRef, plotsRef, windowSecRef, onRemovePanel, onRemoveSeries,
+  panel, catalog, buffersRef, plotsRef, windowSecRef, panelElRef, onRemovePanel, onRemoveSeries,
 }: ChartPanelProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -224,42 +273,49 @@ const ChartPanel = React.memo(function ChartPanel({
     plotsRef.current.delete(panel.id);
     if (!panel.seriesKeys.length) return;
 
-    // Use RAF so grid layout is settled before we read width
-    const rafId = requestAnimationFrame(() => {
-      const w   = el.clientWidth || 500;
-      const win = windowSecRef.current;
-      const now = Date.now() / 1000;
+    let u: uPlot | null = null;
+    let rafId = 0;
+
+    const create = (w: number) => {
+      if (u) return; // already created
+      const win  = windowSecRef.current;
+      const now  = Date.now() / 1000;
       const opts = makeUPlotOpts(w, panel.seriesKeys, catalog);
       const data = buildData(panel.seriesKeys, buffersRef.current, win);
-      const u    = new uPlot(opts, data, el);
+      u = new uPlot(opts, data, el);
       u.setScale('x', { min: now - win, max: now });
       plotsRef.current.set(panel.id, u);
+    };
 
-      const ro = new ResizeObserver(() => {
-        const newW = el.clientWidth;
-        if (newW > 0) u.setSize({ width: newW, height: 220 });
-      });
-      ro.observe(el.parentElement ?? el);
+    const ro = new ResizeObserver((entries) => {
+      const newW = entries[0]?.contentRect.width ?? el.clientWidth;
+      if (newW <= 0) return;
+      if (!u) {
+        create(newW);
+      } else {
+        u.setSize({ width: newW, height: 220 });
+      }
+    });
+    ro.observe(el.parentElement ?? el);
 
-      // store cleanup on the ref so the outer cleanup can call it
-      (el as HTMLDivElement & { _roCleanup?: () => void })._roCleanup = () => {
-        ro.disconnect();
-        u.destroy();
-        plotsRef.current.delete(panel.id);
-      };
+    // Also try immediately via RAF in case the element is already visible
+    rafId = requestAnimationFrame(() => {
+      const w = el.clientWidth;
+      if (w > 0) create(w);
     });
 
     return () => {
       cancelAnimationFrame(rafId);
-      const cleanup = (el as HTMLDivElement & { _roCleanup?: () => void })._roCleanup;
-      if (cleanup) { cleanup(); delete (el as HTMLDivElement & { _roCleanup?: () => void })._roCleanup; }
+      ro.disconnect();
+      u?.destroy();
+      plotsRef.current.delete(panel.id);
     };
   // Recreate uPlot instance only when the series fingerprint changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [panel.id, panel.seriesKeys.join('\0')]);
 
   return (
-    <div className="mc-panel">
+    <div className="mc-panel" ref={panelElRef}>
       <div className="mc-panel-hdr">
         <span className="mc-panel-title">{panel.title}</span>
         <button
@@ -307,6 +363,7 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
   const catalogRef    = useRef<Map<string, SeriesMeta>>(new Map());
   const panelsRef     = useRef<Panel[]>([]);
   const windowSecRef  = useRef<number>(DEFAULT_WINDOW_SEC);
+  const panelElsRef   = useRef<Map<string, HTMLDivElement>>(new Map());
 
   const [catalog,    setCatalog]    = useState<Map<string, SeriesMeta>>(new Map());
   const [panels,     setPanels]     = useState<Panel[]>([]);
@@ -482,6 +539,22 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
     ).filter(p => p.seriesKeys.length > 0));
   }, []);
 
+  // Map from seriesKey → panelId for sidebar "already added" display
+  const usedKeyToPanel = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of panels) for (const k of p.seriesKeys) m.set(k, p.id);
+    return m;
+  }, [panels]);
+
+  // Scroll + briefly highlight a panel by id
+  const scrollToPanel = useCallback((panelId: string) => {
+    const el = panelElsRef.current.get(panelId);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    el.classList.add('mc-panel-highlight');
+    setTimeout(() => el.classList.remove('mc-panel-highlight'), 1200);
+  }, []);
+
   // ── Import / Export ─────────────────────────────────────────────────────
 
   const handleExport = useCallback(() => {
@@ -583,11 +656,26 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
                   )}
                   {m.unit && <span className="mc-series-unit">[{m.unit}]</span>}
                 </div>
-                <button
-                  className="mc-add-btn"
-                  title="Add to dashboard"
-                  onClick={e => { e.stopPropagation(); openPopover(e, m.key); }}
-                >+ Add</button>
+                {usedKeyToPanel.has(m.key) ? (
+                  <div className="mc-series-used">
+                    <button
+                      className="mc-add-btn mc-goto-btn"
+                      title="Scroll to panel"
+                      onClick={() => scrollToPanel(usedKeyToPanel.get(m.key)!)}
+                    >↗ View</button>
+                    <button
+                      className="mc-icon-btn mc-remove-from-sidebar"
+                      title="Remove from panel"
+                      onClick={() => removeSeries(usedKeyToPanel.get(m.key)!, m.key)}
+                    >✕</button>
+                  </div>
+                ) : (
+                  <button
+                    className="mc-add-btn"
+                    title="Add to dashboard"
+                    onClick={e => { e.stopPropagation(); openPopover(e, m.key); }}
+                  >+ Add</button>
+                )}
               </div>
             ))}
           </div>
@@ -650,6 +738,10 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
                 buffersRef={buffersRef}
                 plotsRef={plotsRef}
                 windowSecRef={windowSecRef}
+                panelElRef={el => {
+                  if (el) panelElsRef.current.set(panel.id, el);
+                  else panelElsRef.current.delete(panel.id);
+                }}
                 onRemovePanel={removePanel}
                 onRemoveSeries={removeSeries}
               />
