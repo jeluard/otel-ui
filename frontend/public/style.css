@@ -3539,6 +3539,7 @@
     .mc-legend-lbl  { white-space: nowrap; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
     .mc-legend-rm   { font-size: 9px !important; padding: 0 2px !important; opacity: 0; transition: opacity 0.15s; }
     .mc-legend-item:hover .mc-legend-rm { opacity: 1; }
+    .mc-legend-rm:hover { color: #f87171 !important; background: rgba(248,113,113,0.1) !important; }
 
     .mc-chart-wrap { padding: 4px 0 0 0; overflow: hidden; min-width: 0; }
     .mc-chart-wrap .u-wrap { display: block !important; width: 100% !important; }
@@ -3555,6 +3556,7 @@
       transition: color 0.15s, background 0.15s;
     }
     .mc-icon-btn:hover { color: #94a3b8; background: rgba(255,255,255,0.06); }
+    .mc-remove-panel-btn:hover { color: #f87171 !important; background: rgba(248,113,113,0.1) !important; }
 
     .mc-popover {
       position: fixed;

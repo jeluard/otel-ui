@@ -255,15 +255,19 @@ interface ChartPanelProps {
   buffersRef:     React.MutableRefObject<Map<string, Buffer>>;
   plotsRef:       React.MutableRefObject<Map<string, uPlot>>;
   windowSecRef:   React.MutableRefObject<number>;
-  panelElRef:     React.RefCallback<HTMLDivElement>;
+  onPanelMount:   (id: string, el: HTMLDivElement | null) => void;
   onRemovePanel:  (id: string) => void;
   onRemoveSeries: (panelId: string, key: string) => void;
 }
 
 const ChartPanel = React.memo(function ChartPanel({
-  panel, catalog, buffersRef, plotsRef, windowSecRef, panelElRef, onRemovePanel, onRemoveSeries,
+  panel, catalog, buffersRef, plotsRef, windowSecRef, onPanelMount, onRemovePanel, onRemoveSeries,
 }: ChartPanelProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
+
+  const panelElRef = useCallback((el: HTMLDivElement | null) => {
+    onPanelMount(panel.id, el);
+  }, [panel.id, onPanelMount]);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -319,7 +323,7 @@ const ChartPanel = React.memo(function ChartPanel({
       <div className="mc-panel-hdr">
         <span className="mc-panel-title">{panel.title}</span>
         <button
-          className="mc-icon-btn"
+          className="mc-icon-btn mc-remove-panel-btn"
           onClick={() => onRemovePanel(panel.id)}
           title="Remove panel"
         >✕</button>
@@ -547,6 +551,11 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
   }, [panels]);
 
   // Scroll + briefly highlight a panel by id
+  const handlePanelMount = useCallback((id: string, el: HTMLDivElement | null) => {
+    if (el) panelElsRef.current.set(id, el);
+    else panelElsRef.current.delete(id);
+  }, []);
+
   const scrollToPanel = useCallback((panelId: string) => {
     const el = panelElsRef.current.get(panelId);
     if (!el) return;
@@ -738,10 +747,7 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
                 buffersRef={buffersRef}
                 plotsRef={plotsRef}
                 windowSecRef={windowSecRef}
-                panelElRef={el => {
-                  if (el) panelElsRef.current.set(panel.id, el);
-                  else panelElsRef.current.delete(panel.id);
-                }}
+                onPanelMount={handlePanelMount}
                 onRemovePanel={removePanel}
                 onRemoveSeries={removeSeries}
               />
