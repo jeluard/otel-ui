@@ -1,6 +1,6 @@
 // ── Demo mode: generates representative trace data for preview ─────────────
 
-import type { WsMessage, SpanEvent, TraceComplete } from './types.ts';
+import type { WsMessage, SpanEvent, TraceComplete, MetricEvent } from './types.ts';
 
 export type DemoScenario = 'standard' | 'multi-instance';
 
@@ -49,7 +49,8 @@ export const DEFAULT_DEMO_CONFIG: DemoConfig = {
 };
 
 let _cfg: DemoConfig = { ...DEFAULT_DEMO_CONFIG };
-let _liveIntervalId: ReturnType<typeof setInterval> | null = null;
+let _liveIntervalId:     ReturnType<typeof setInterval> | null = null;
+let _liveMetricsIntervalId: ReturnType<typeof setInterval> | null = null;
 let _liveEmitFn:     (() => void) | null = null;
 let _liveOnMessage:  ((msg: WsMessage) => void) | null = null;
 let _liveScenario:   DemoScenario = 'standard';
@@ -392,14 +393,126 @@ function startMultiInstanceDemo(onMessage: (msg: WsMessage) => void): () => void
   _liveIntervalId = blockInterval;
   _liveEmitFn     = emitBlock;
 
+  // Emit metrics every 2 s
+  const firstMetricsTimeout = setTimeout(() => emitDemoMetrics(onMessage), 500);
+  _liveMetricsIntervalId = setInterval(() => emitDemoMetrics(onMessage), 2000);
+
   return () => {
     clearTimeout(firstTimeout);
+    clearTimeout(firstMetricsTimeout);
     clearInterval(blockInterval);
+    if (_liveMetricsIntervalId !== null) { clearInterval(_liveMetricsIntervalId); _liveMetricsIntervalId = null; }
     _liveIntervalId = null;
     _liveEmitFn     = null;
     _liveOnMessage  = null;
     _liveScenario   = 'standard';
   };
+}
+
+// ── Demo metrics generation ───────────────────────────────────────────────
+//
+// Per-service state for realistic-looking metric trajectories.
+// Each service has a slowly-drifting baseline with short spikes.
+
+interface MetricState {
+  cpu:         number;   // 0–100
+  mem:         number;   // bytes
+  reqRate:     number;   // req/s
+  errorRate:   number;   // 0–1
+  p99latency:  number;   // ms
+  reqTotal:    number;   // monotonic counter
+}
+
+const _metricState = new Map<string, MetricState>();
+
+function initialMetricState(id: string): MetricState {
+  // Seed deterministically from service name so each service has a distinct baseline
+  const seed = id.split('').reduce((a, c) => (a * 31 + c.charCodeAt(0)) & 0xfffff, 0);
+  const frac = (seed & 0xffff) / 0xffff;
+  return {
+    cpu:        20 + frac * 40,
+    mem:        50_000_000 + frac * 200_000_000,
+    reqRate:    5  + frac * 30,
+    errorRate:  0.005 + frac * 0.02,
+    p99latency: 20  + frac * 160,
+    reqTotal:   Math.floor(1000 + frac * 50_000),
+  };
+}
+
+function drift(v: number, min: number, max: number, step: number): number {
+  const d = (Math.random() - 0.48) * step;  // slight upward drift
+  return Math.max(min, Math.min(max, v + d));
+}
+
+function emitDemoMetrics(onMessage: (msg: WsMessage) => void): void {
+  const now = Date.now() * 1e6; // ns
+  const batch: MetricEvent[] = [];
+
+  // Occasionally inject a spike on one service (10% of ticks)
+  const spikeTarget = Math.random() < 0.10
+    ? demoInstances[Math.floor(Math.random() * demoInstances.length)]?.id ?? null
+    : null;
+
+  for (const inst of demoInstances) {
+    let st = _metricState.get(inst.id);
+    if (!st) { st = initialMetricState(inst.id); _metricState.set(inst.id, st); }
+
+    const spiking = inst.id === spikeTarget;
+
+    // Slowly drift all metrics
+    st.cpu        = spiking ? Math.min(100, st.cpu + 30 * Math.random()) : drift(st.cpu, 5, 95, 8);
+    st.mem        = drift(st.mem, 20_000_000, 500_000_000, 5_000_000);
+    st.reqRate    = spiking ? st.reqRate * (1.5 + Math.random()) : drift(st.reqRate, 1, 200, 5);
+    st.errorRate  = spiking ? Math.min(1, st.errorRate + 0.15) : drift(st.errorRate * 100, 0, 30, 1) / 100;
+    st.p99latency = spiking ? st.p99latency * (2 + Math.random()) : drift(st.p99latency, 5, 2000, 20);
+    st.reqTotal   = Math.round(st.reqTotal + st.reqRate * 2); // 2s tick
+
+    const svc   = inst.id;
+    const attrs: [string, string][] = [['service.instance.id', svc]];
+
+    batch.push(
+      // CPU gauge
+      { service_name: svc, metric_name: 'process.cpu.usage',
+        description: 'CPU usage %', unit: '%',
+        timestamp_unix_nano: now, attributes: attrs,
+        value: { kind: 'gauge', value: parseFloat(st.cpu.toFixed(1)) } },
+
+      // Memory gauge
+      { service_name: svc, metric_name: 'process.memory.usage',
+        description: 'Resident memory bytes', unit: 'By',
+        timestamp_unix_nano: now, attributes: attrs,
+        value: { kind: 'gauge', value: Math.round(st.mem) } },
+
+      // Request rate gauge
+      { service_name: svc, metric_name: 'http.request.rate',
+        description: 'Requests per second', unit: 'req/s',
+        timestamp_unix_nano: now, attributes: attrs,
+        value: { kind: 'gauge', value: parseFloat(st.reqRate.toFixed(2)) } },
+
+      // Error rate gauge
+      { service_name: svc, metric_name: 'http.error.rate',
+        description: 'Fraction of requests that errored', unit: '1',
+        timestamp_unix_nano: now, attributes: attrs,
+        value: { kind: 'gauge', value: parseFloat(st.errorRate.toFixed(4)) } },
+
+      // Request duration histogram (p99 approximated as a histogram)
+      { service_name: svc, metric_name: 'http.request.duration',
+        description: 'Request duration', unit: 'ms',
+        timestamp_unix_nano: now, attributes: attrs,
+        value: { kind: 'histogram', count: Math.round(st.reqRate * 2),
+                 sum: st.p99latency * st.reqRate * 2 * 0.4,
+                 min: 1,
+                 max: parseFloat(st.p99latency.toFixed(1)) } },
+
+      // Monotonic request counter
+      { service_name: svc, metric_name: 'http.requests.total',
+        description: 'Total requests handled', unit: 'req',
+        timestamp_unix_nano: now, attributes: attrs,
+        value: { kind: 'sum', value: st.reqTotal, is_monotonic: true } },
+    );
+  }
+
+  if (batch.length > 0) onMessage({ type: 'metrics_batch', metrics: batch });
 }
 
 /**
@@ -423,9 +536,15 @@ export function startDemo(onMessage: (msg: WsMessage) => void, scenario: DemoSce
   _liveIntervalId = traceInterval;
   _liveEmitFn     = emitTrace;
 
+  // Emit metrics every 2 s
+  const firstMetricsTimeout = setTimeout(() => emitDemoMetrics(onMessage), 500);
+  _liveMetricsIntervalId = setInterval(() => emitDemoMetrics(onMessage), 2000);
+
   return () => {
     clearTimeout(firstTimeout);
+    clearTimeout(firstMetricsTimeout);
     clearInterval(traceInterval);
+    if (_liveMetricsIntervalId !== null) { clearInterval(_liveMetricsIntervalId); _liveMetricsIntervalId = null; }
     _liveIntervalId = null;
     _liveEmitFn     = null;
     _liveOnMessage  = null;

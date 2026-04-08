@@ -47,3 +47,83 @@ Override the WebSocket endpoint at runtime via the URL hash:
 ```
 http://localhost:3000#ws=ws://localhost:8080
 ```
+
+## WebSocket API
+
+The backend broadcasts all telemetry over a WebSocket at `ws://<host>/ws`.
+Messages are newline-delimited JSON. Two message types are emitted:
+
+### `spans_batch`
+
+Emitted whenever a batch of spans is received from an instrumented process.
+
+```ts
+{
+  type: "spans_batch",
+  spans: Array<{
+    trace_id:             string,       // hex trace ID
+    span_id:              string,       // hex span ID
+    parent_span_id:       string|null,  // null for root spans
+    name:                 string,       // operation name
+    target:               string,       // dotted module path, e.g. "module::sub"
+    service_name:         string,
+    instance_id?:         string,       // process/node instance
+    start_time_unix_nano: number,
+    end_time_unix_nano:   number,
+    duration_ms:          number,
+    status:               string,       // "ok" | "error" | "unset"
+    attributes:           [string, string][]
+  }>
+}
+```
+
+### `metrics_batch`
+
+Emitted whenever a batch of metric data points is received.
+
+```ts
+{
+  type: "metrics_batch",
+  metrics: Array<{
+    service_name:        string,
+    metric_name:         string,
+    description:         string,
+    unit:                string,
+    timestamp_unix_nano: number,
+    attributes:          [string, string][],
+    value:
+      | { kind: "gauge",     value: number }
+      | { kind: "sum",       value: number, is_monotonic: boolean }
+      | { kind: "histogram", count: number, sum: number, min: number, max: number }
+  }>
+}
+```
+
+### Reading data with plain JavaScript
+
+```js
+const ws = new WebSocket("ws://localhost:8081/ws");
+
+ws.addEventListener("message", ({ data }) => {
+  const msg = JSON.parse(data);
+
+  if (msg.type === "spans_batch") {
+    for (const span of msg.spans) {
+      console.log(
+        `[${span.service_name}] ${span.name}`,
+        `${span.duration_ms.toFixed(1)} ms`,
+        span.status === "error" ? "❌" : "✅"
+      );
+    }
+  }
+
+  if (msg.type === "metrics_batch") {
+    for (const m of msg.metrics) {
+      const val =
+        m.value.kind === "histogram" ? m.value.sum / m.value.count  // average
+        : m.value.value;
+      console.log(`[${m.service_name}] ${m.metric_name} = ${val} ${m.unit}`);
+    }
+  }
+});
+```

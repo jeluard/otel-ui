@@ -37,8 +37,24 @@ export interface TraceComplete {
   instance_id: string;
 }
 
+export type MetricValue =
+  | { kind: 'gauge';     value: number }
+  | { kind: 'sum';       value: number; is_monotonic: boolean }
+  | { kind: 'histogram'; count: number; sum: number; min: number; max: number };
+
+export interface MetricEvent {
+  service_name:        string;
+  metric_name:         string;
+  description:         string;
+  unit:                string;
+  timestamp_unix_nano: number;
+  attributes:          [string, string][];
+  value:               MetricValue;
+}
+
 export type WsMessage =
-  | { type: 'spans_batch'; spans: SpanEvent[] };
+  | { type: 'spans_batch';   spans:   SpanEvent[] }
+  | { type: 'metrics_batch'; metrics: MetricEvent[] };
 
 export interface TraceBounds {
   min_started_at: number;

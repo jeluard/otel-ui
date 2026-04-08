@@ -23,6 +23,10 @@ struct Args {
     #[arg(long, default_value = "[::]:4317")]
     otlp_addr: String,
 
+    /// OTLP HTTP bind address (protobuf over HTTP/1.1, port 4318)
+    #[arg(long, default_value = "[::]:4318")]
+    otlp_http_addr: String,
+
     /// HTTP / WebSocket bind address
     #[arg(long, default_value = "0.0.0.0:8081")]
     http_addr: String,
@@ -82,7 +86,16 @@ async fn main() -> anyhow::Result<()> {
     let otlp_addr  = args.otlp_addr.clone();
     tokio::spawn(async move {
         if let Err(e) = otlp::run_otlp_server(otlp_state, &otlp_addr).await {
-            tracing::error!("OTLP server error: {}", e);
+            tracing::error!("OTLP gRPC server error: {}", e);
+        }
+    });
+
+    // Start the OTLP HTTP receiver
+    let otlp_http_state = state.clone();
+    let otlp_http_addr  = args.otlp_http_addr.clone();
+    tokio::spawn(async move {
+        if let Err(e) = otlp::run_otlp_http_server(otlp_http_state, &otlp_http_addr).await {
+            tracing::error!("OTLP HTTP server error: {}", e);
         }
     });
 

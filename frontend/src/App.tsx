@@ -28,6 +28,8 @@ import SpansView       from './components/SpansView.tsx';
 import TracesPanel     from './components/TracesPanel.tsx';
 import NodeDetailPanel from './components/NodeDetailPanel.tsx';
 import HideRulesDialog from './components/HideRulesDialog.tsx';
+import MetricsView     from './components/MetricsView.tsx';
+import type { MetricsViewHandle } from './components/MetricsView.tsx';
 
 import type { DiagramViewHandle }     from './components/DiagramView.tsx';
 import type { SpansViewHandle }       from './components/SpansView.tsx';
@@ -40,7 +42,7 @@ declare const __BRIDGE_IMAGE__: string;
 
 // ── Exported types ─────────────────────────────────────────────────────────────
 
-export type TabId = 'diagram' | 'spans' | 'traces' | 'statistics';
+export type TabId = 'diagram' | 'spans' | 'traces' | 'statistics' | 'metrics';
 
 export interface SharedState {
   layout:         Layout;
@@ -54,10 +56,12 @@ export interface SharedState {
   inFlightSpans:  Map<string, SpanEvent[]>;
   spanVisibleNode: Map<string, string | null>;
   activeExpiry:   Map<string, number>;
-  spansThisSecond:  number;
-  tracesThisSecond: number;
-  spsSmoothed:      number;
-  tpsSmoothed:      number;
+  spansThisSecond:   number;
+  tracesThisSecond:  number;
+  metricsThisSecond: number;
+  spsSmoothed:       number;
+  tpsSmoothed:       number;
+  mpsSmoothed:       number;
   lastRateUpdate:   number;
   traceHL:    { nodes: Set<string>; edgeKeys: Set<string> } | null;
   selectionHL: { nodes: Set<string>; edgeKeys: Set<string> } | null;
@@ -94,6 +98,7 @@ export default function App() {
   const [hasData,        setHasData]        = useState(false);
   const [sps,              setSps]              = useState(0);
   const [tps,              setTps]              = useState(0);
+  const [mps,              setMps]              = useState(0);
   const [spansFlashing,    setSpansFlashing]    = useState(false);
   const [showHideRules,    setShowHideRules]    = useState(false);
   const [completedTraces,  setCompletedTraces]  = useState<TraceComplete[]>([]);
@@ -149,10 +154,12 @@ export default function App() {
     inFlightSpans:    new Map(),
     spanVisibleNode:  new Map(),
     activeExpiry:     new Map(),
-    spansThisSecond:  0,
-    tracesThisSecond: 0,
-    spsSmoothed:      0,
-    tpsSmoothed:      0,
+    spansThisSecond:   0,
+    tracesThisSecond:  0,
+    metricsThisSecond: 0,
+    spsSmoothed:       0,
+    tpsSmoothed:       0,
+    mpsSmoothed:       0,
     lastRateUpdate:   performance.now(),
     traceHL:          null,
     selectionHL:      null,
@@ -176,6 +183,7 @@ export default function App() {
   const spansViewRef    = useRef<SpansViewHandle>(null);
   const tracesPanelRef  = useRef<TracesPanelHandle>(null);
   const nodeDetailRef   = useRef<NodeDetailPanelHandle>(null);
+  const metricsViewRef  = useRef<MetricsViewHandle>(null);
 
   // ── Load default filters (async, best effort before WS starts) ─────────────
   useEffect(() => {
@@ -452,6 +460,7 @@ export default function App() {
       case 'spans_batch': {
         if (msg.spans.length > 0) setHasReceivedTraces(true);
 
+
         // ── Build topology incrementally from spans ─────────────────────────────────────
 
         // Index this batch's span_id → node_id first (two-pass within the batch)
@@ -528,6 +537,16 @@ export default function App() {
         for (const item of msg.spans) st.spanQueue.push(item);
         break;
       }
+
+      case 'metrics_batch':
+        if (msg.metrics.length > 0) {
+          setHasReceivedTraces(true);
+          setHasData(true);
+          setWelcomeVisible(false);
+          sharedRef.current.metricsThisSecond += msg.metrics.length;
+        }
+        metricsViewRef.current?.onMetricsBatch(msg.metrics);
+        break;
 
     }
   }, [rebuildMergedEdges]);
@@ -656,14 +675,18 @@ export default function App() {
       // a two-window average to smooth out batch-arrival jitter.
       if (now - st.lastRateUpdate >= 1000) {
         const elapsed  = now - st.lastRateUpdate;
-        const instantSps = st.spansThisSecond  * 1000 / elapsed;
-        const instantTps = st.tracesThisSecond * 1000 / elapsed;
+        const instantSps = st.spansThisSecond   * 1000 / elapsed;
+        const instantTps = st.tracesThisSecond  * 1000 / elapsed;
+        const instantMps = st.metricsThisSecond * 1000 / elapsed;
         st.spsSmoothed = (st.spsSmoothed + instantSps) / 2;
         st.tpsSmoothed = (st.tpsSmoothed + instantTps) / 2;
+        st.mpsSmoothed = (st.mpsSmoothed + instantMps) / 2;
         setSps(Math.round(st.spsSmoothed));
         setTps(Math.round(st.tpsSmoothed));
-        st.spansThisSecond  = 0;
-        st.tracesThisSecond = 0;
+        setMps(Math.round(st.mpsSmoothed));
+        st.spansThisSecond   = 0;
+        st.tracesThisSecond  = 0;
+        st.metricsThisSecond = 0;
         st.lastRateUpdate   = now;
       }
     };
@@ -777,6 +800,7 @@ export default function App() {
       activeTab === 'spans'      ? 'spans-active'      : '',
       activeTab === 'traces'     ? 'traces-active'     : '',
       activeTab === 'statistics' ? 'statistics-active' : '',
+      activeTab === 'metrics'    ? 'metrics-active'    : '',
     ].filter(Boolean).join(' ')}>
 
       <Header
@@ -791,6 +815,7 @@ export default function App() {
         onLogoClick={resetToWelcome}
         sps={sps}
         tps={tps}
+        mps={mps}
         spansFlashing={spansFlashing}
         onOpenFilters={() => setShowHideRules(true)}
         historyPlayback={historyPlayback}
@@ -840,6 +865,8 @@ export default function App() {
       />
 
       <StatisticsView traces={completedTraces} totalSeen={completedTraces.length} />
+
+      <MetricsView ref={metricsViewRef} />
 
       <HideRulesDialog
         open={showHideRules}

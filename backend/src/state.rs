@@ -37,6 +37,27 @@ pub struct TraceComplete {
     pub instance_id: String,
 }
 
+/// A single metric data point decoded from OTLP.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricEvent {
+    pub service_name:        String,
+    pub metric_name:         String,
+    pub description:         String,
+    pub unit:                String,
+    pub timestamp_unix_nano: u64,
+    pub attributes:          Vec<(String, String)>,
+    pub value:               MetricValue,
+}
+
+/// The decoded value of a metric data point.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MetricValue {
+    Gauge     { value: f64 },
+    Sum       { value: f64, is_monotonic: bool },
+    Histogram { count: u64, sum: f64, min: f64, max: f64 },
+}
+
 /// Events broadcast to WebSocket clients.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -44,6 +65,10 @@ pub enum WsMessage {
     /// A batch of spans — one broadcast per OTLP export call.
     SpansBatch {
         spans: Vec<SpanEvent>,
+    },
+    /// A batch of metric data points — one broadcast per OTLP metrics export call.
+    MetricsBatch {
+        metrics: Vec<MetricEvent>,
     },
 }
 

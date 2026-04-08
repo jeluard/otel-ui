@@ -640,15 +640,19 @@
     #app.spans-active      #minimap,
     #app.traces-active     #minimap,
     #app.statistics-active #minimap,
+    #app.metrics-active    #minimap,
     #app.spans-active      #zoom-hint,
     #app.traces-active     #zoom-hint,
     #app.statistics-active #zoom-hint,
+    #app.metrics-active    #zoom-hint,
     #app.spans-active      #bg-canvas,
     #app.traces-active     #bg-canvas,
     #app.statistics-active #bg-canvas,
+    #app.metrics-active    #bg-canvas,
     #app.spans-active      #main-canvas,
     #app.traces-active     #main-canvas,
-    #app.statistics-active #main-canvas { display: none !important; }
+    #app.statistics-active #main-canvas,
+    #app.metrics-active    #main-canvas { display: none !important; }
 
     #app.no-data #bg-canvas,
     #app.no-data #main-canvas,
@@ -849,6 +853,35 @@
     }
     #trc-export.trc-export-vis { display: inline-block; }
     #trc-export:hover { background: rgba(99,102,241,0.18); border-color: rgba(99,102,241,0.5); }
+    #trc-freeze {
+      margin-left: 6px;
+      padding: 3px 10px;
+      border: 1px solid rgba(248,180,0,0.28);
+      border-radius: 5px;
+      background: rgba(248,180,0,0.06);
+      color: #fbbf24;
+      font-size: 11px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+    #trc-freeze:hover { background: rgba(248,180,0,0.14); border-color: rgba(248,180,0,0.5); }
+    #trc-freeze.trc-freeze-active {
+      border-color: rgba(34,211,238,0.5);
+      background: rgba(34,211,238,0.08);
+      color: #22d3ee;
+    }
+    #trc-freeze.trc-freeze-active:hover { background: rgba(34,211,238,0.14); }
+    #trc-flame-frozen-badge {
+      position: absolute;
+      bottom: 8px;
+      right: 12px;
+      font-size: 11px;
+      color: #22d3ee;
+      opacity: 0.7;
+      pointer-events: none;
+      letter-spacing: 0.04em;
+    }
     #trc-flame-wrap {
       flex: 0 0 55%;
       display: flex;
@@ -1770,7 +1803,7 @@
     .trc-show-hidden-label input[type="checkbox"] { accent-color: #6366f1; cursor: pointer; }
     .trc-show-hidden-label input[type="checkbox"]:disabled { opacity: 0.35; cursor: default; }
     .trc-sp-hidden td { opacity: 0.35; font-style: italic; }
-    #trc-flame-area.trc-panel-active { display: block; overflow-x: auto; overflow-y: hidden; }
+    #trc-flame-area.trc-panel-active { display: block; overflow-x: auto; overflow-y: hidden; position: relative; }
     #trc-flame-area { display: none; }
     #trc-spans-table {
       width: 100%;
@@ -3051,3 +3084,247 @@
       font-size: 10px;
       text-align: right !important;
     }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+       uPlot base styles (vendored — avoids a separate CSS import)
+       ──────────────────────────────────────────────────────────────────────── */
+    .u-wrap            { display: inline-block; position: relative; }
+    .u-over, .u-under  { position: absolute; }
+    .u-under           { overflow: hidden; }
+    .uplot canvas      { display: block; position: relative; width: 100%; height: 100%; }
+    .u-axis            { position: absolute; }
+    .u-select          { background: rgba(0,0,255,0.07); position: absolute; pointer-events: none; }
+    .u-cursor-x,
+    .u-cursor-y        { position: absolute; left: 0; top: 0; pointer-events: none;
+                         will-change: transform; z-index: 100; }
+    .u-hz .u-cursor-x,
+    .u-vt .u-cursor-y  { height: 100%; border-right: 1px dashed rgba(255,255,255,0.3); }
+    .u-hz .u-cursor-y,
+    .u-vt .u-cursor-x  { width: 100%;  border-bottom: 1px dashed rgba(255,255,255,0.3); }
+    .u-cursor-pt       { position: absolute; top: 0; left: 0; border-radius: 50%; border: 0 solid;
+                         pointer-events: none; will-change: transform; z-index: 100;
+                         transform: translate(-50%, -50%); }
+    .u-legend          { display: none; }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+       Metrics view
+       ──────────────────────────────────────────────────────────────────────── */
+    #metrics-view {
+      display: none;
+      position: absolute;
+      top: 56px; left: 0; right: 0; bottom: 0;
+      background: var(--c-bg);
+      z-index: 5;
+      overflow: hidden;
+      flex-direction: row;
+    }
+    #app.metrics-active #metrics-view   { display: flex; }
+    #app.metrics-active #legend,
+    #app.metrics-active #tooltip,
+    #app.metrics-active #node-detail,
+    #app.metrics-active #empty-hint     { display: none; }
+
+    /* Sidebar */
+    .mc-sidebar {
+      width: 264px;
+      min-width: 200px;
+      border-right: 1px solid rgba(255,255,255,0.06);
+      overflow-y: auto;
+      overflow-x: hidden;
+      flex-shrink: 0;
+      padding: 12px 0 24px;
+    }
+    .mc-sidebar-hdr {
+      padding: 0 14px 10px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #475569;
+    }
+    .mc-sidebar-empty {
+      padding: 12px 14px;
+      font-size: 11px;
+      color: #334155;
+      line-height: 1.6;
+    }
+    .mc-metric-group { margin-bottom: 4px; }
+    .mc-metric-name {
+      padding: 5px 14px 3px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #94a3b8;
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .mc-series-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 14px 3px 18px;
+      transition: background 0.15s;
+    }
+    .mc-series-row:hover { background: rgba(255,255,255,0.03); }
+    .mc-series-info {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .mc-series-svc   { font-size: 10px; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mc-series-attrs { font-size: 9px;  color: #475569; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mc-series-unit  { font-size: 9px;  color: #334155; font-family: 'JetBrains Mono', monospace; }
+    .mc-add-btn {
+      flex-shrink: 0;
+      padding: 2px 7px;
+      border-radius: 4px;
+      border: 1px solid rgba(34,211,238,0.3);
+      background: rgba(34,211,238,0.06);
+      color: #22d3ee;
+      font-size: 10px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .mc-add-btn:hover { background: rgba(34,211,238,0.14); border-color: rgba(34,211,238,0.6); }
+
+    /* Dashboard */
+    .mc-dashboard {
+      flex: 1;
+      min-width: 0;
+      overflow-y: auto;
+      padding: 0 20px 36px;
+      display: flex;
+      flex-direction: column;
+    }
+    .mc-dash-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      margin-bottom: 16px;
+      flex-shrink: 0;
+    }
+    .mc-window-label {
+      font-size: 11px;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .mc-window-select {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 4px;
+      color: #94a3b8;
+      font-size: 12px;
+      padding: 2px 6px;
+      cursor: pointer;
+      outline: none;
+    }
+    .mc-window-select:focus { border-color: #22d3ee; }
+    .mc-dash-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 60%;
+      gap: 10px;
+    }
+    .mc-dash-empty-title { font-size: 14px; color: #334155; }
+    .mc-dash-empty-sub   { font-size: 11px; color: #1e293b; text-align: center; line-height: 1.7; }
+    .mc-dash-empty-sub strong { color: #334155; }
+
+    .mc-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+      gap: 16px;
+    }
+    .mc-panel {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 8px;
+      overflow: hidden;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .mc-panel-hdr {
+      display: flex;
+      align-items: center;
+      padding: 9px 10px 8px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      gap: 8px;
+    }
+    .mc-panel-title {
+      flex: 1;
+      font-size: 11px;
+      font-weight: 600;
+      color: #94a3b8;
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .mc-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 7px 12px 6px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+    .mc-legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      color: #64748b;
+    }
+    .mc-legend-dot  { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .mc-legend-lbl  { white-space: nowrap; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+    .mc-legend-rm   { font-size: 9px !important; padding: 0 2px !important; opacity: 0; transition: opacity 0.15s; }
+    .mc-legend-item:hover .mc-legend-rm { opacity: 1; }
+
+    .mc-chart-wrap { padding: 4px 0 0 0; overflow: hidden; min-width: 0; }
+    .mc-chart-wrap .u-wrap { display: block !important; width: 100% !important; }
+
+    .mc-icon-btn {
+      border: none;
+      background: none;
+      color: #475569;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 4px;
+      border-radius: 3px;
+      line-height: 1;
+      transition: color 0.15s, background 0.15s;
+    }
+    .mc-icon-btn:hover { color: #94a3b8; background: rgba(255,255,255,0.06); }
+
+    .mc-popover {
+      position: fixed;
+      z-index: 200;
+      background: #1e293b;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 6px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+      min-width: 170px;
+      overflow: hidden;
+      padding: 4px 0;
+    }
+    .mc-popover-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 7px 14px;
+      border: none;
+      background: none;
+      color: #94a3b8;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+    }
+    .mc-popover-item:hover { background: rgba(255,255,255,0.07); color: #e2e8f0; }

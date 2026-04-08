@@ -20,6 +20,7 @@ interface HeaderProps {
   onLogoClick: () => void;
   sps: number;
   tps: number;
+  mps: number;
   spansFlashing: boolean;
   onOpenFilters: () => void;
   historyPlayback: HistoryPlayback;
@@ -37,6 +38,7 @@ export default function Header({
   onLogoClick,
   sps,
   tps,
+  mps,
   spansFlashing,
   onOpenFilters,
   historyPlayback,
@@ -79,6 +81,10 @@ export default function Header({
         <div className="hdr-metric">
           <span className="hdr-metric-value" id="hdr-sps">{sps}</span>
           <span className="hdr-metric-label">spans/s</span>
+        </div>
+        <div className="hdr-metric">
+          <span className="hdr-metric-value" id="hdr-mps">{mps}</span>
+          <span className="hdr-metric-label">metrics/s</span>
         </div>
         <div className="hdr-metric">
           <span className="hdr-metric-value" id="hdr-tps">{tps}</span>
@@ -163,6 +169,18 @@ export default function Header({
             <rect x="8.5" y="1" width="2.5" height="10" rx="0.5" />
           </svg>
           Stats
+        </button>
+        <button
+          className={`tab-btn${activeTab === 'metrics' ? ' tab-active' : ''}`}
+          onClick={() => onTabChange('metrics')}
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <polyline points="1,9 3.5,5 6,7 8.5,3 11,5" />
+            <circle cx="3.5" cy="5" r="0.8" fill="currentColor" stroke="none" />
+            <circle cx="6"   cy="7" r="0.8" fill="currentColor" stroke="none" />
+            <circle cx="8.5" cy="3" r="0.8" fill="currentColor" stroke="none" />
+          </svg>
+          Metrics
         </button>
       </div>
       {historyEnabled && <HistoryControls hp={historyPlayback} onOpenConfig={() => setShowHistoryConfig(true)} />}

@@ -119,6 +119,8 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
     const [detailTab, setDetailTab]         = useState<DetailTab>('flame');
     const [showHidden, setShowHidden]       = useState(false);
     const [mmZoomPct, setMmZoomPct]         = useState(100);
+    const [flameFrozen, setFlameFrozen]     = useState(false);
+    const flameFrozenRef                    = useRef(false);
     // Freeze the list while the mouse is over it so items don't shift mid-click
     const [listFrozen, setListFrozen]       = useState(false);
     const frozenTracesRef                   = useRef<TraceComplete[]>([]);
@@ -150,6 +152,7 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
     useEffect(() => { tracesRef.current     = traces;    }, [traces]);
     useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
     useEffect(() => { detailTabRef.current  = detailTab;  }, [detailTab]);
+    useEffect(() => { flameFrozenRef.current = flameFrozen; }, [flameFrozen]);
 
     // ── Imperative handle ────────────────────────────────────────────────
     useImperativeHandle(ref, () => ({
@@ -230,6 +233,8 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
       selectedIdRef.current = traceId; // eager update — avoids stale ref in frozen-list filter
       setSelectedId(traceId);
       setShowHidden(false);
+      setFlameFrozen(false);
+      flameFrozenRef.current = false;
       flameDirtyRef.current = false;
 
       const trace = tracesRef.current.find(t => t.trace_id === traceId);
@@ -274,7 +279,7 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
       let rafId: number;
       const tick = () => {
         rafId = requestAnimationFrame(tick);
-        if (flameDirtyRef.current && selectedIdRef.current) {
+        if (flameDirtyRef.current && selectedIdRef.current && !flameFrozenRef.current) {
           flameDirtyRef.current = false;
           redrawSelected(selectedIdRef.current);
         }
@@ -697,12 +702,29 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
                   &#8595; Export JSON
                 </button>
               )}
+              {selectedId && (
+                <button
+                  id="trc-freeze"
+                  className={flameFrozen ? 'trc-freeze-active' : undefined}
+                  title={flameFrozen ? 'Unfreeze: resume live updates' : 'Freeze: stop live updates'}
+                  onClick={() => {
+                    const next = !flameFrozen;
+                    setFlameFrozen(next);
+                    flameFrozenRef.current = next;
+                  }}
+                >
+                  {flameFrozen ? '▶ Live' : '⏸ Freeze'}
+                </button>
+              )}
             </div>
 
             {/* Flamegraph area */}
             <div id="trc-flame-area" className={detailTab === 'flame' ? 'trc-panel-active' : ''}>
               {!selectedId && <div id="trc-no-trace">&larr; select a trace to view its flamegraph</div>}
               <canvas ref={flameCanvasRef} id="trc-canvas" style={{ display: selectedId ? 'block' : 'none' }} />
+              {flameFrozen && selectedId && (
+                <div id="trc-flame-frozen-badge">⏸ frozen</div>
+              )}
             </div>
             {/* Flamegraph hover tooltip — positioned fixed, outside the scroll container */}
             <div ref={flameTipRef} id="fg-tip" style={{ display: 'none' }} />

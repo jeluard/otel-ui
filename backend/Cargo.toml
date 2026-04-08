@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.51.0", features = ["full"] }
 tokio-stream = "0.1"
 
 # WebSocket
@@ -19,8 +19,10 @@ axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors"] }
 
 # OTLP gRPC server (receive spans from collector)
-tonic = { version = "0.14", features = ["gzip"] }
-opentelemetry-proto = { version = "0.31", features = ["gen-tonic", "trace"] }
+tonic = { version = "0.14.5", features = ["gzip"] }
+opentelemetry-proto = { version = "0.31", features = ["gen-tonic", "trace", "metrics"] }
+prost = "0.14"
+bytes = "1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -28,15 +30,15 @@ serde_json = "1"
 
 # Tracing / Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # Utilities
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1.23.0", features = ["v4"] }
 dashmap = "6"
 futures-util = "0.3"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
 base64 = "0.22"
 hex = "0.4"
-anyhow = "1"
-clap = { version = "4", features = ["derive", "env"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+anyhow = "1.0.102"
+clap = { version = "4.6.0", features = ["derive", "env"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
