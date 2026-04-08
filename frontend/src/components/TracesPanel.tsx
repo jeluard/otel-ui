@@ -8,7 +8,7 @@ import React, {
   forwardRef,
   useImperativeHandle,
 } from 'react';
-import type { SpanEvent, Edge, TraceComplete } from '../core/types.ts';
+import type { SpanEvent, Edge, TraceComplete, LogEvent } from '../core/types.ts';
 import { fmtTime } from '../core/utils.ts';
 import type { LayoutNode } from '../canvas/layout.ts';
 import { drawFlamegraph } from '../canvas/flamegraph.ts';
@@ -109,12 +109,14 @@ interface TracesPanelProps {
   getEdges: () => Edge[];
   getLayoutNodes: () => Map<string, LayoutNode>;
   onTraceHighlightChange: (hl: { nodes: Set<string>; edgeKeys: Set<string> } | null) => void;
+  /** Look up logs by span_id or `trace:<traceId>`. */
+  getLogs: (key: string) => LogEvent[];
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
-  function TracesPanel({ activeTab, inFlightSpans, getEdges, getLayoutNodes, onTraceHighlightChange }, ref) {
+  function TracesPanel({ activeTab, inFlightSpans, getEdges, getLayoutNodes, onTraceHighlightChange, getLogs }, ref) {
     const [traces, setTraces]               = useState<TraceComplete[]>([]);
     const [selectedId, setSelectedId]       = useState<string | null>(null);
     const [detailTab, setDetailTab]         = useState<DetailTab>('flame');
@@ -863,13 +865,14 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
                     <tbody>
                       {sortedSpans
                         .filter(s => visibleIds.has(s.span_id) || showHidden)
-                        .map(s => {
+                        .flatMap(s => {
                           const isHidden = !visibleIds.has(s.span_id);
                           const depth    = (isHidden ? allDepths : filteredDepths).get(s.span_id) ?? 0;
                           const col      = targetColor(s.target);
                           const relMs    = (s.start_time_unix_nano - tMin) / 1_000_000;
                           const isErr    = s.status === 'error';
-                          return (
+                          const spanLogs = getLogs(s.span_id);
+                          const rows = [
                             <tr key={s.span_id} className={isHidden ? 'trc-sp-hidden' : undefined}>
                               <td style={{ color: C.dim }}>{depth}</td>
                               <td className="trc-sp-name" style={{ paddingLeft: 8 + depth * 12 }}>{s.name}</td>
@@ -877,8 +880,27 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
                               <td className="trc-sp-dur" style={{ color: C.dim }}>+{fmtDur(relMs)}</td>
                               <td className="trc-sp-dur">{fmtDur(s.duration_ms)}</td>
                               <td className={isErr ? 'trc-sp-err' : 'trc-sp-ok'}>{isErr ? 'error' : 'ok'}</td>
-                            </tr>
-                          );
+                            </tr>,
+                          ];
+                          for (const log of spanLogs) {
+                            const sev = log.severity_text || String(log.severity_number);
+                            const isErrLog = sev.toLowerCase().includes('error') || log.severity_number >= 17;
+                            const logRelMs = log.timestamp_unix_nano > 0
+                              ? (log.timestamp_unix_nano - tMin) / 1_000_000
+                              : null;
+                            rows.push(
+                              <tr key={`log-${s.span_id}-${log.timestamp_unix_nano}-${log.body.slice(0,16)}`} className="trc-log-row">
+                                <td />
+                                <td className="trc-log-body" style={{ paddingLeft: 8 + depth * 12 + 16 }} colSpan={3}>
+                                  <span className={`trc-log-sev trc-log-sev-${isErrLog ? 'error' : sev.toLowerCase().startsWith('warn') ? 'warn' : 'info'}`}>{sev || 'LOG'}</span>
+                                  {log.body}
+                                </td>
+                                <td className="trc-sp-dur" style={{ color: C.dim }}>{logRelMs !== null ? `+${fmtDur(logRelMs)}` : ''}</td>
+                                <td />
+                              </tr>,
+                            );
+                          }
+                          return rows;
                         })}
                     </tbody>
                   </table>

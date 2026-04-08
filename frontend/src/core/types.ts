@@ -52,9 +52,22 @@ export interface MetricEvent {
   value:               MetricValue;
 }
 
+export interface LogEvent {
+  timestamp_unix_nano: number;
+  observed_unix_nano:  number;
+  severity_text:       string;
+  severity_number:     number;
+  body:                string;
+  trace_id:            string | null;
+  span_id:             string | null;
+  attributes:          [string, string][];
+  service_name:        string;
+}
+
 export type WsMessage =
   | { type: 'spans_batch';   spans:   SpanEvent[] }
-  | { type: 'metrics_batch'; metrics: MetricEvent[] };
+  | { type: 'metrics_batch'; metrics: MetricEvent[] }
+  | { type: 'logs_batch';    logs:    LogEvent[] };
 
 export interface TraceBounds {
   min_started_at: number;

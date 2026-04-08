@@ -11,6 +11,10 @@ use axum::{
     routing::post,
 };
 use opentelemetry_proto::tonic::{
+    collector::logs::v1::{
+        logs_service_server::{LogsService, LogsServiceServer},
+        ExportLogsServiceRequest, ExportLogsServiceResponse,
+    },
     collector::metrics::v1::{
         metrics_service_server::{MetricsService, MetricsServiceServer},
         ExportMetricsServiceRequest, ExportMetricsServiceResponse,
@@ -26,7 +30,7 @@ use prost::Message;
 use tonic::{transport::Server, Request, Response, Status};
 use tracing::info;
 
-use crate::state::{AppState, MetricEvent, MetricValue, SpanEvent, WsMessage};
+use crate::state::{AppState, LogEvent, MetricEvent, MetricValue, SpanEvent, WsMessage};
 
 pub struct OtlpTraceReceiver {
     state: Arc<AppState>,
@@ -320,11 +324,79 @@ pub async fn run_otlp_server(state: Arc<AppState>, addr: &str) -> anyhow::Result
 
     Server::builder()
         .add_service(TraceServiceServer::new(OtlpTraceReceiver { state: state.clone() }))
-        .add_service(MetricsServiceServer::new(OtlpMetricsReceiver { state }))
+        .add_service(MetricsServiceServer::new(OtlpMetricsReceiver { state: state.clone() }))
+        .add_service(LogsServiceServer::new(OtlpLogsReceiver { state }))
         .serve(addr)
         .await?;
 
     Ok(())
+}
+
+// ── Logs receiver ────────────────────────────────────────────────────────────
+
+pub struct OtlpLogsReceiver {
+    state: Arc<AppState>,
+}
+
+#[tonic::async_trait]
+impl LogsService for OtlpLogsReceiver {
+    async fn export(
+        &self,
+        request: Request<ExportLogsServiceRequest>,
+    ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+        let req = request.into_inner();
+        let mut batch: Vec<LogEvent> = Vec::new();
+
+        for resource_logs in req.resource_logs {
+            let service_name = resource_logs
+                .resource
+                .as_ref()
+                .and_then(|r| {
+                    r.attributes.iter().find(|kv| kv.key == "service.name").and_then(|kv| {
+                        kv.value.as_ref().and_then(|v| {
+                            if let Some(AnyValueKind::StringValue(s)) = &v.value {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+
+            for scope_logs in resource_logs.scope_logs {
+                for lr in scope_logs.log_records {
+                    let trace_id = if lr.trace_id.is_empty() { None } else { Some(hex::encode(&lr.trace_id)) };
+                    let span_id  = if lr.span_id.is_empty()  { None } else { Some(hex::encode(&lr.span_id))  };
+                    let body = match lr.body.as_ref().and_then(|v| v.value.as_ref()) {
+                        Some(AnyValueKind::StringValue(s)) => s.clone(),
+                        Some(other) => format!("{:?}", other),
+                        None => String::new(),
+                    };
+                    batch.push(LogEvent {
+                        timestamp_unix_nano: lr.time_unix_nano,
+                        observed_unix_nano:  lr.observed_time_unix_nano,
+                        severity_text:       lr.severity_text.clone(),
+                        severity_number:     lr.severity_number,
+                        body,
+                        trace_id,
+                        span_id,
+                        attributes:          lr.attributes.iter().map(|kv| (kv.key.clone(), kv_to_string(&kv.value))).collect(),
+                        service_name:        service_name.clone(),
+                    });
+                }
+            }
+        }
+
+        if !batch.is_empty() {
+            let msg = WsMessage::LogsBatch { logs: batch };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = self.state.broadcast.send(std::sync::Arc::new(json));
+            }
+        }
+
+        Ok(Response::new(ExportLogsServiceResponse { partial_success: None }))
+    }
 }
 
 // ── OTLP/HTTP (port 4318) ────────────────────────────────────────────────────
@@ -366,13 +438,32 @@ async fn http_metrics(
     StatusCode::OK
 }
 
+/// Process a raw protobuf body as an ExportLogsServiceRequest.
+async fn http_logs(
+    State(state): State<Arc<AppState>>,
+    _headers: HeaderMap,
+    body: Bytes,
+) -> StatusCode {
+    let req = match ExportLogsServiceRequest::decode(body) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("OTLP/HTTP logs decode error: {}", e);
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+    let receiver = OtlpLogsReceiver { state };
+    let _ = receiver.export(Request::new(req)).await;
+    StatusCode::OK
+}
+
 pub async fn run_otlp_http_server(state: Arc<AppState>, addr: &str) -> anyhow::Result<()> {
     let addr: std::net::SocketAddr = addr.parse()?;
-    info!("OTLP HTTP receiver on {} (protobuf, /v1/traces + /v1/metrics)", addr);
+    info!("OTLP HTTP receiver on {} (protobuf, /v1/traces + /v1/metrics + /v1/logs)", addr);
 
     let app = Router::new()
         .route("/v1/traces",  post(http_traces))
         .route("/v1/metrics", post(http_metrics))
+        .route("/v1/logs",    post(http_logs))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

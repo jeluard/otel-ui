@@ -18,7 +18,7 @@ import { startDemo, setDemoConfig, DEFAULT_DEMO_CONFIG } from './core/demo.ts';
 import type { DemoScenario, DemoConfig } from './core/demo.ts';
 import { useWebSocket }    from './hooks/useWebSocket.ts';
 import { useHistoryPlayback } from './hooks/useHistoryPlayback.ts';
-import type { SpanEvent, WsMessage, Edge, Node, TraceComplete } from './core/types.ts';
+import type { SpanEvent, WsMessage, Edge, Node, TraceComplete, LogEvent } from './core/types.ts';
 
 import Header          from './components/Header.tsx';
 import WelcomeScreen   from './components/WelcomeScreen.tsx';
@@ -30,6 +30,8 @@ import NodeDetailPanel from './components/NodeDetailPanel.tsx';
 import HideRulesDialog from './components/HideRulesDialog.tsx';
 import MetricsView     from './components/MetricsView.tsx';
 import type { MetricsViewHandle } from './components/MetricsView.tsx';
+import LogsView        from './components/LogsView.tsx';
+import type { LogsViewHandle } from './components/LogsView.tsx';
 
 import type { DiagramViewHandle }     from './components/DiagramView.tsx';
 import type { SpansViewHandle }       from './components/SpansView.tsx';
@@ -42,7 +44,7 @@ declare const __BRIDGE_IMAGE__: string;
 
 // ── Exported types ─────────────────────────────────────────────────────────────
 
-export type TabId = 'diagram' | 'spans' | 'traces' | 'statistics' | 'metrics';
+export type TabId = 'diagram' | 'spans' | 'traces' | 'statistics' | 'metrics' | 'logs';
 
 export interface SharedState {
   layout:         Layout;
@@ -184,6 +186,9 @@ export default function App() {
   const tracesPanelRef  = useRef<TracesPanelHandle>(null);
   const nodeDetailRef   = useRef<NodeDetailPanelHandle>(null);
   const metricsViewRef  = useRef<MetricsViewHandle>(null);
+  const logsViewRef     = useRef<LogsViewHandle>(null);
+  // Keyed by span_id (for span-level correlation) and trace_id (for trace-level)
+  const logsRef = useRef<Map<string, LogEvent[]>>(new Map());
 
   // ── Load default filters (async, best effort before WS starts) ─────────────
   useEffect(() => {
@@ -548,6 +553,23 @@ export default function App() {
         metricsViewRef.current?.onMetricsBatch(msg.metrics);
         break;
 
+      case 'logs_batch':
+        logsViewRef.current?.add(msg.logs);
+        for (const log of msg.logs) {
+          if (log.span_id) {
+            const arr = logsRef.current.get(log.span_id) ?? [];
+            arr.push(log);
+            logsRef.current.set(log.span_id, arr);
+          }
+          if (log.trace_id) {
+            const key = `trace:${log.trace_id}`;
+            const arr = logsRef.current.get(key) ?? [];
+            arr.push(log);
+            logsRef.current.set(key, arr);
+          }
+        }
+        break;
+
     }
   }, [rebuildMergedEdges]);
 
@@ -801,6 +823,7 @@ export default function App() {
       activeTab === 'traces'     ? 'traces-active'     : '',
       activeTab === 'statistics' ? 'statistics-active' : '',
       activeTab === 'metrics'    ? 'metrics-active'    : '',
+      activeTab === 'logs'       ? 'logs-active'       : '',
     ].filter(Boolean).join(' ')}>
 
       <Header
@@ -850,6 +873,7 @@ export default function App() {
         getEdges={getEdges}
         getLayoutNodes={getLayoutNodes}
         onTraceHighlightChange={handleTraceHighlight}
+        getLogs={(spanId) => logsRef.current.get(spanId) ?? []}
       />
 
       <NodeDetailPanel
@@ -867,6 +891,8 @@ export default function App() {
       <StatisticsView traces={completedTraces} totalSeen={completedTraces.length} />
 
       <MetricsView ref={metricsViewRef} />
+
+      <LogsView ref={logsViewRef} />
 
       <HideRulesDialog
         open={showHideRules}

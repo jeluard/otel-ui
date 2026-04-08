@@ -20,7 +20,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 
 # OTLP gRPC server (receive spans from collector)
 tonic = { version = "0.14.5", features = ["gzip"] }
-opentelemetry-proto = { version = "0.31", features = ["gen-tonic", "trace", "metrics"] }
+opentelemetry-proto = { version = "0.31", features = ["gen-tonic", "trace", "metrics", "logs"] }
 prost = "0.14"
 bytes = "1"
 

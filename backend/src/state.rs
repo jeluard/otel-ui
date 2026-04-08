@@ -58,6 +58,20 @@ pub enum MetricValue {
     Histogram { count: u64, sum: f64, min: f64, max: f64 },
 }
 
+/// A single log record decoded from OTLP.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogEvent {
+    pub timestamp_unix_nano: u64,
+    pub observed_unix_nano:  u64,
+    pub severity_text:       String,
+    pub severity_number:     i32,
+    pub body:                String,
+    pub trace_id:            Option<String>,
+    pub span_id:             Option<String>,
+    pub attributes:          Vec<(String, String)>,
+    pub service_name:        String,
+}
+
 /// Events broadcast to WebSocket clients.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -69,6 +83,10 @@ pub enum WsMessage {
     /// A batch of metric data points — one broadcast per OTLP metrics export call.
     MetricsBatch {
         metrics: Vec<MetricEvent>,
+    },
+    /// A batch of log records — one broadcast per OTLP logs export call.
+    LogsBatch {
+        logs: Vec<LogEvent>,
     },
 }
 

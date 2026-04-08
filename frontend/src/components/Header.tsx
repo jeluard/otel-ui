@@ -182,6 +182,17 @@ export default function Header({
           </svg>
           Metrics
         </button>
+        <button
+          className={`tab-btn${activeTab === 'logs' ? ' tab-active' : ''}`}
+          onClick={() => onTabChange('logs')}
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <rect x="1" y="1" width="10" height="2" rx="0.5" />
+            <rect x="1" y="5" width="10" height="2" rx="0.5" />
+            <rect x="1" y="9" width="6"  height="2" rx="0.5" />
+          </svg>
+          Logs
+        </button>
       </div>
       {historyEnabled && <HistoryControls hp={historyPlayback} onOpenConfig={() => setShowHistoryConfig(true)} />}
       {historyEnabled && (
