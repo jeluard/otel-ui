@@ -9,6 +9,7 @@ import React, {
   useImperativeHandle,
 } from 'react';
 import type { SpanEvent, Edge, TraceComplete } from '../core/types.ts';
+import { fmtTime } from '../core/utils.ts';
 import type { LayoutNode } from '../canvas/layout.ts';
 import { drawFlamegraph } from '../canvas/flamegraph.ts';
 import type { FlamegraphHitTest } from '../canvas/flamegraph.ts';
@@ -121,6 +122,11 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
     const [mmZoomPct, setMmZoomPct]         = useState(100);
     const [flameFrozen, setFlameFrozen]     = useState(false);
     const flameFrozenRef                    = useRef(false);
+
+    // Import preview state
+    interface ImportPreview { traces: TraceComplete[]; fileName: string; }
+    const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+    const importInputRef                    = useRef<HTMLInputElement>(null);
     // Freeze the list while the mouse is over it so items don't shift mid-click
     const [listFrozen, setListFrozen]       = useState(false);
     const frozenTracesRef                   = useRef<TraceComplete[]>([]);
@@ -557,6 +563,66 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
       URL.revokeObjectURL(a.href);
     }, []);
 
+    // ── Export all traces ────────────────────────────────────────────────
+    const handleExportAll = useCallback(() => {
+      const all = tracesRef.current;
+      if (all.length === 0) return;
+      const envelope = {
+        version: 1,
+        exported_at: new Date().toISOString(),
+        count: all.length,
+        traces: all,
+      };
+      const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `otel-ui-traces-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }, []);
+
+    // ── Import traces ────────────────────────────────────────────────────
+    const handleImportFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      // Reset so the same file can be re-selected
+      e.target.value = '';
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const raw = JSON.parse(reader.result as string);
+          let incoming: TraceComplete[];
+          if (Array.isArray(raw)) {
+            incoming = raw as TraceComplete[];
+          } else if (raw?.traces && Array.isArray(raw.traces)) {
+            incoming = raw.traces as TraceComplete[];
+          } else if (raw?.trace_id) {
+            incoming = [raw as TraceComplete];
+          } else {
+            alert('Unrecognised format. Expected a trace, an array of traces, or an otel-ui export envelope.');
+            return;
+          }
+          if (incoming.length === 0) { alert('No traces found in file.'); return; }
+          setImportPreview({ traces: incoming, fileName: file.name });
+        } catch {
+          alert('Failed to parse JSON file.');
+        }
+      };
+      reader.readAsText(file);
+    }, []);
+
+    const confirmImport = useCallback(() => {
+      if (!importPreview) return;
+      const next = [...importPreview.traces, ...tracesRef.current];
+      // Deduplicate by trace_id, keep first occurrence (imported preferred)
+      const seen = new Set<string>();
+      const deduped = next.filter(t => { if (seen.has(t.trace_id)) return false; seen.add(t.trace_id); return true; });
+      const capped = deduped.slice(0, MAX_RECENT);
+      tracesRef.current = capped;
+      setTraces(capped);
+      setImportPreview(null);
+    }, [importPreview]);
+
     // ── Derived render data ──────────────────────────────────────────────
     // Prefer tracesRef (always up-to-date) over React state to avoid the brief
     // window where inFlightSpans is already deleted but setTraces hasn't re-rendered.
@@ -596,7 +662,44 @@ const TracesPanel = forwardRef<TracesPanelHandle, TracesPanelProps>(
             <span>Traces</span>
             <span id="trc-list-count">{traces.length}</span>
             {listFrozen && <span id="trc-list-frozen">&#9646;&#9646; frozen</span>}
+            <div id="trc-list-actions">
+              <button
+                className="trc-list-action-btn"
+                title="Import traces from JSON"
+                onClick={() => importInputRef.current?.click()}
+              >⬆ Import</button>
+              <button
+                className="trc-list-action-btn"
+                title="Export all traces to JSON"
+                disabled={traces.length === 0}
+                onClick={handleExportAll}
+              >⬇ Export all</button>
+            </div>
           </div>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: 'none' }}
+            onChange={handleImportFile}
+          />
+          {importPreview && (() => {
+            const ts = importPreview.traces.map(t => t.started_at).filter(Boolean);
+            const minTs = ts.length ? Math.min(...ts) : 0;
+            const maxTs = ts.length ? Math.max(...ts) : 0;
+            return (
+              <div id="trc-import-preview">
+                <div id="trc-import-preview-info">
+                  <strong>{importPreview.traces.length}</strong> trace{importPreview.traces.length !== 1 ? 's' : ''} from <em>{importPreview.fileName}</em>
+                  {minTs > 0 && <span id="trc-import-range">{fmtTime(minTs / 1_000_000)} – {fmtTime(maxTs / 1_000_000)}</span>}
+                </div>
+                <div id="trc-import-preview-btns">
+                  <button className="trc-import-confirm" onClick={confirmImport}>Import</button>
+                  <button className="trc-import-cancel" onClick={() => setImportPreview(null)}>✕</button>
+                </div>
+              </div>
+            );
+          })()}
           {selectedId && (() => {
             const pinned = tracesRef.current.find(t => t.trace_id === selectedId)
               ?? traces.find(t => t.trace_id === selectedId);

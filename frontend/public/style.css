@@ -687,8 +687,8 @@
     #trc-list-header {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 10px 16px 8px;
+      gap: 6px;
+      padding: 8px 16px 6px;
       border-bottom: 1px solid rgba(255,255,255,0.06);
       font-size: 11px;
       font-weight: 600;
@@ -696,7 +696,68 @@
       text-transform: uppercase;
       color: #475569;
       flex-shrink: 0;
+      flex-wrap: wrap;
     }
+    #trc-list-actions {
+      display: flex;
+      gap: 4px;
+      margin-left: auto;
+    }
+    .trc-list-action-btn {
+      padding: 2px 8px;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 4px;
+      background: transparent;
+      color: #64748b;
+      font-size: 10px;
+      cursor: pointer;
+      font-family: 'Inter', system-ui, sans-serif;
+      transition: background 0.12s, color 0.12s;
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 400;
+    }
+    .trc-list-action-btn:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: #94a3b8; }
+    .trc-list-action-btn:disabled { opacity: 0.35; cursor: default; }
+    #trc-import-preview {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 14px;
+      background: rgba(34,211,238,0.06);
+      border-bottom: 1px solid rgba(34,211,238,0.18);
+      font-size: 11px;
+      color: #94a3b8;
+      flex-shrink: 0;
+    }
+    #trc-import-preview strong { color: #22d3ee; }
+    #trc-import-preview em { color: #cbd5e1; font-style: normal; }
+    #trc-import-range { display: block; color: #64748b; font-size: 10px; margin-top: 2px; font-family: 'JetBrains Mono', monospace; }
+    #trc-import-preview-info { flex: 1; min-width: 0; }
+    #trc-import-preview-btns { display: flex; gap: 4px; flex-shrink: 0; }
+    .trc-import-confirm {
+      padding: 3px 10px;
+      border: 1px solid rgba(34,211,238,0.4);
+      border-radius: 4px;
+      background: rgba(34,211,238,0.1);
+      color: #22d3ee;
+      font-size: 11px;
+      cursor: pointer;
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+    .trc-import-confirm:hover { background: rgba(34,211,238,0.18); }
+    .trc-import-cancel {
+      padding: 3px 7px;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 4px;
+      background: transparent;
+      color: #64748b;
+      font-size: 11px;
+      cursor: pointer;
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+    .trc-import-cancel:hover { background: rgba(255,255,255,0.06); color: #94a3b8; }
     #trc-list-count {
       font-size: 10px;
       background: rgba(99,102,241,0.15);
