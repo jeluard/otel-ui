@@ -6,6 +6,49 @@ import React, {
 import uPlot from 'uplot';
 import type { MetricEvent } from '../core/types.ts';
 
+// ── Persistence helpers ────────────────────────────────────────────────────────
+
+const DASH_VERSION = 1;
+
+interface SavedPanel {
+  id:         string;
+  title:      string;
+  seriesKeys: string[];
+}
+
+interface DashboardSave {
+  version:     number;
+  fingerprint: string;  // sorted joined service names
+  windowSec:   number;
+  panels:      SavedPanel[];
+}
+
+function storageKey(fingerprint: string): string {
+  return `otel-ui:dash:${fingerprint}`;
+}
+
+function saveDashboard(fingerprint: string, windowSec: number, panels: Panel[]): void {
+  try {
+    const data: DashboardSave = {
+      version: DASH_VERSION,
+      fingerprint,
+      windowSec,
+      panels: panels.map(p => ({ id: p.id, title: p.title, seriesKeys: p.seriesKeys })),
+    };
+    localStorage.setItem(storageKey(fingerprint), JSON.stringify(data));
+  } catch (_) { /* quota exceeded — ignore */ }
+}
+
+function loadDashboard(fingerprint: string): DashboardSave | null {
+  try {
+    const raw = localStorage.getItem(storageKey(fingerprint));
+    if (!raw) return null;
+    const data = JSON.parse(raw) as DashboardSave;
+    if (data.version !== DASH_VERSION || data.fingerprint !== fingerprint) return null;
+    return data;
+  } catch (_) { return null; }
+}
+
 // ── Public handle ─────────────────────────────────────────────────────────────
 
 export interface MetricsViewHandle {
@@ -269,8 +312,20 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
   const [panels,     setPanels]     = useState<Panel[]>([]);
   const [windowSec,  setWindowSec]  = useState<number>(DEFAULT_WINDOW_SEC);
 
+  // ── Persistence state ────────────────────────────────────────────────────
+  const fingerprintRef  = useRef<string>('');
+  const loadedRef       = useRef<boolean>(false); // have we applied a saved dashboard?
+  const importInputRef  = useRef<HTMLInputElement>(null);
+  const [importBanner, setImportBanner] = useState<string | null>(null);
+
   // Keep windowSecRef in sync
   useEffect(() => { windowSecRef.current = windowSec; }, [windowSec]);
+
+  // Auto-save whenever panels or windowSec change (once we have a fingerprint)
+  useEffect(() => {
+    if (!fingerprintRef.current) return;
+    saveDashboard(fingerprintRef.current, windowSec, panels);
+  }, [panels, windowSec]);
   // { key: seriesKey, anchorEl rect } — which catalog entry has the popover open
   const [popover, setPopover]  = useState<{ key: string; top: number; left: number } | null>(null);
 
@@ -351,6 +406,28 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
           };
           catalogRef.current.set(key, meta);
           setCatalog(new Map(catalogRef.current));
+
+          // Update fingerprint (sorted unique service names)
+          const services = [...new Set([...catalogRef.current.values()].map(m => m.service))].sort();
+          const fp = services.join(',');
+          if (fp !== fingerprintRef.current) {
+            fingerprintRef.current = fp;
+            // First time we get a fingerprint — try to restore saved dashboard
+            if (!loadedRef.current) {
+              loadedRef.current = true;
+              const saved = loadDashboard(fp);
+              if (saved) {
+                setWindowSec(saved.windowSec);
+                windowSecRef.current = saved.windowSec;
+                const restored: Panel[] = saved.panels.map(sp => ({
+                  id:         sp.id,
+                  title:      sp.title,
+                  seriesKeys: sp.seriesKeys,
+                }));
+                setPanels(restored);
+              }
+            }
+          }
         }
       }
 
@@ -403,6 +480,54 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
         ? { ...p, seriesKeys: p.seriesKeys.filter(k => k !== key) }
         : p,
     ).filter(p => p.seriesKeys.length > 0));
+  }, []);
+
+  // ── Import / Export ─────────────────────────────────────────────────────
+
+  const handleExport = useCallback(() => {
+    const fp = fingerprintRef.current || 'unknown';
+    const data: DashboardSave = {
+      version:     DASH_VERSION,
+      fingerprint: fp,
+      windowSec:   windowSecRef.current,
+      panels:      panelsRef.current.map(p => ({ id: p.id, title: p.title, seriesKeys: p.seriesKeys })),
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a    = document.createElement('a');
+    a.href     = URL.createObjectURL(blob);
+    a.download = `otel-ui-metrics-${fp.replace(/[^a-z0-9]/gi, '_').slice(0, 40)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }, []);
+
+  const handleImport = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result as string) as DashboardSave;
+        if (data.version !== DASH_VERSION || !Array.isArray(data.panels)) {
+          setImportBanner('Invalid dashboard file.');
+          return;
+        }
+        setWindowSec(data.windowSec);
+        windowSecRef.current = data.windowSec;
+        const imported: Panel[] = data.panels.map(sp => ({
+          id:         mkId(), // fresh id to avoid collisions
+          title:      sp.title,
+          seriesKeys: sp.seriesKeys,
+        }));
+        setPanels(imported);
+        setImportBanner(`Imported ${imported.length} panel${imported.length !== 1 ? 's' : ''} from "${file.name}"`);
+        setTimeout(() => setImportBanner(null), 4000);
+      } catch (_) {
+        setImportBanner('Failed to parse dashboard file.');
+        setTimeout(() => setImportBanner(null), 4000);
+      }
+    };
+    reader.readAsText(file);
   }, []);
 
   // ── Sidebar: catalog grouped by metric name ────────────────────────────────
@@ -483,7 +608,29 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
+          <div className="mc-dash-spacer" />
+          {fingerprintRef.current && (
+            <span className="mc-fingerprint" title="Identified by service names">
+              {fingerprintRef.current.split(',').join(' · ')}
+            </span>
+          )}
+          <button className="mc-action-btn" title="Export dashboard" onClick={handleExport}>
+            ↓ Export
+          </button>
+          <button className="mc-action-btn" title="Import dashboard" onClick={() => importInputRef.current?.click()}>
+            ↑ Import
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: 'none' }}
+            onChange={handleImport}
+          />
         </div>
+        {importBanner && (
+          <div className="mc-import-banner">{importBanner}</div>
+        )}
         {panels.length === 0 ? (
           <div className="mc-dash-empty">
             <div className="mc-dash-empty-title">No panels yet</div>
