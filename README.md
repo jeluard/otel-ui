@@ -32,6 +32,30 @@ A real-time OTel UI providing insights of what is going on inside your process.
 | `backend/` | Rust service that implements an OTLP gRPC server + WebSocket broadcaster. Discovers topology dynamically from span parent-child links. |
 | `frontend/` | esbuild + TypeScript canvas app |
 
+## Quick Start
+
+### Running the backend via Docker
+
+The backend can be run without a local Rust toolchain using Docker. The image is published to the GitHub Container Registry on every push to `main`:
+
+```bash
+docker run --rm -p 4317:4317 -p 8080:8080 ghcr.io/jeluard/otel-ui-bridge:latest
+```
+
+This exposes:
+- `:4317` — OTLP gRPC endpoint for your instrumented process
+- `:8080` — WebSocket + HTTP API for the UI
+
+### Using the hosted UI
+
+A hosted version of the frontend is available at [https://jeluard.github.io/otel-ui](https://jeluard.github.io/otel-ui). Point it at your local backend by appending the WebSocket URL to the hash:
+
+```
+https://jeluard.github.io/otel-ui#ws=ws://localhost:8080
+```
+
+No data leaves your machine — the browser connects directly to your local backend over WebSocket.
+
 ## Development
 
 ```bash
