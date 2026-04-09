@@ -71,8 +71,11 @@ export interface SharedState {
 
 // ── WS URL ────────────────────────────────────────────────────────────────────
 
+const _hashParams = new URLSearchParams(window.location.hash.slice(1));
+const HAS_HASH_WS  = _hashParams.has('ws');
+
 const WS_URL = (() => {
-  const hashWs = new URLSearchParams(window.location.hash.slice(1)).get('ws');
+  const hashWs = _hashParams.get('ws');
   if (hashWs) return hashWs;
   const { hostname, port, protocol } = window.location;
   const proto = protocol === 'https:' ? 'wss:' : 'ws:';
@@ -94,7 +97,7 @@ export default function App() {
   const [demoMode,       setDemoMode]       = useState(false);
   const [demoScenario,   setDemoScenario]   = useState<DemoScenario>('standard');
   const [demoConfig,     setDemoConfigState] = useState<DemoConfig>({ ...DEFAULT_DEMO_CONFIG });
-  const [welcomeVisible, setWelcomeVisible] = useState(true);
+  const [welcomeVisible, setWelcomeVisible] = useState(!HAS_HASH_WS);
   const [activeTab,      setActiveTab]      = useState<TabId>('diagram');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [hasData,        setHasData]        = useState(false);
@@ -852,6 +855,12 @@ export default function App() {
         historyPlayback={historyPlayback}
         hasReceivedTraces={hasReceivedTraces}
       />
+
+      {HAS_HASH_WS && !welcomeVisible && !hasData && (
+        <div id="waiting-banner">
+          Connected to <code>{WS_URL}</code> — waiting for spans…
+        </div>
+      )}
 
       <DiagramView
         ref={diagramViewRef}

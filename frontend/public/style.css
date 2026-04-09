@@ -325,6 +325,26 @@
       gap: 16px;
     }
 
+    /* ── Waiting banner (shown when ws param bypassed welcome but no data yet) */
+    #waiting-banner {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(20, 30, 55, 0.92);
+      border: 1px solid var(--c-border, #2a3a5c);
+      border-radius: 8px;
+      padding: 10px 18px;
+      font-size: 13px;
+      color: var(--c-text-dim, #8899bb);
+      z-index: 100;
+      white-space: nowrap;
+    }
+    #waiting-banner code {
+      color: var(--c-accent, #7eb3ff);
+      font-family: monospace;
+    }
+
     /* ── Welcome screen (shown before any data) ────────────────────────────── */
     #welcome-screen {
       position: fixed;
