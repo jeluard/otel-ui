@@ -6,13 +6,15 @@ A real-time OTel UI providing insights of what is going on inside your process.
 ┌─────────────────────────────────────────────────────────┐
 │  otel-ui/                                                 │
 │                                                          │
-│  ┌──────────────────┐   OTLP gRPC   ┌─────────────────┐ │
+│  ┌──────────────────┐  OTLP gRPC    ┌─────────────────┐ │
 │  │  OTEL Collector  │──────────────▶│  Rust Backend   │ │
-│  │  (port 4317/18)  │               │  (port 8080)    │ │
-│  └──────────────────┘               │                 │ │
-│           ▲                         │  • OTLP gRPC    │ │
-│           │ spans                   │    receiver     │ │
-│    Remote process                   │  • Span grouper │ │
+│  │  gRPC  port 4317 │  OTLP HTTP    │  (port 8080)    │ │
+│  │  HTTP  port 4318 │──────────────▶│                 │ │
+│  └──────────────────┘               │  • OTLP gRPC    │ │
+│           ▲                         │    receiver     │ │
+│           │ spans/metrics           │  • OTLP HTTP    │ │
+│    Remote process                   │    receiver     │ │
+│                                     │  • Span grouper │ │
 │                                     │  • WebSocket    │ │
 │                                     │    broadcaster  │ │
 │                                     └────────┬────────┘ │
@@ -39,11 +41,12 @@ A real-time OTel UI providing insights of what is going on inside your process.
 The backend can be run without a local Rust toolchain using Docker. The image is published to the GitHub Container Registry on every push to `main`:
 
 ```bash
-docker run --rm -p 4317:4317 -p 8080:8080 ghcr.io/jeluard/otel-ui-bridge:latest
+docker run --rm -p 4317:4317 -p 4318:4318 -p 8080:8080 ghcr.io/jeluard/otel-ui-bridge:latest
 ```
 
 This exposes:
-- `:4317` — OTLP gRPC endpoint for your instrumented process
+- `:4317` — OTLP gRPC endpoint (traces, logs)
+- `:4318` — OTLP HTTP/protobuf endpoint (metrics)
 - `:8080` — WebSocket + HTTP API for the UI
 
 ### Using the hosted UI

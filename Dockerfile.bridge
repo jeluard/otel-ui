@@ -3,7 +3,7 @@
 # (e.g. GitHub Pages). It receives OTLP spans and exposes a WebSocket for the UI.
 #
 # Usage:
-#   docker run --rm -p 4317:4317 -p 8080:8080 ghcr.io/OWNER/otel-ui-bridge:latest
+#   docker run --rm -p 4317:4317 -p 4318:4318 -p 8080:8080 ghcr.io/OWNER/otel-ui-bridge:latest
 
 FROM rust:latest AS builder
 
@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 WORKDIR /app
 COPY --from=builder /build/target/release/otel-ui-backend /app/otel-ui-backend
 
-EXPOSE 4317 8080
+EXPOSE 4317 4318 8080
 
 ENV RUST_LOG=otel_ui_backend=info
 
