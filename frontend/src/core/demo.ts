@@ -1,6 +1,6 @@
 // ── Demo mode: generates representative trace data for preview ─────────────
 
-import type { WsMessage, SpanEvent, TraceComplete, MetricEvent } from './types.ts';
+import type { WsMessage, SpanEvent, TraceComplete, MetricEvent, LogEvent } from './types.ts';
 
 export type DemoScenario = 'standard' | 'multi-instance';
 
@@ -393,13 +393,18 @@ function startMultiInstanceDemo(onMessage: (msg: WsMessage) => void): () => void
   _liveIntervalId = blockInterval;
   _liveEmitFn     = emitBlock;
 
-  // Emit metrics every 2 s
+  // Emit metrics and logs every 2 s
   const firstMetricsTimeout = setTimeout(() => emitDemoMetrics(onMessage), 500);
-  _liveMetricsIntervalId = setInterval(() => emitDemoMetrics(onMessage), 2000);
+  const firstLogsTimeout    = setTimeout(() => emitDemoLogs(onMessage), 800);
+  _liveMetricsIntervalId = setInterval(() => {
+    emitDemoMetrics(onMessage);
+    emitDemoLogs(onMessage);
+  }, 2000);
 
   return () => {
     clearTimeout(firstTimeout);
     clearTimeout(firstMetricsTimeout);
+    clearTimeout(firstLogsTimeout);
     clearInterval(blockInterval);
     if (_liveMetricsIntervalId !== null) { clearInterval(_liveMetricsIntervalId); _liveMetricsIntervalId = null; }
     _liveIntervalId = null;
@@ -515,6 +520,57 @@ function emitDemoMetrics(onMessage: (msg: WsMessage) => void): void {
   if (batch.length > 0) onMessage({ type: 'metrics_batch', metrics: batch });
 }
 
+// ── Demo log generation ───────────────────────────────────────────────────────
+
+const LOG_SEVERITY_LEVELS: { text: string; number: number }[] = [
+  { text: 'DEBUG', number: 5 },
+  { text: 'INFO',  number: 9 },
+  { text: 'WARN',  number: 13 },
+  { text: 'ERROR', number: 17 },
+];
+
+const LOG_MESSAGES: Record<ServiceType, string[]> = {
+  api:      ['Request received', 'Request validated', 'Response sent', 'Rate limit check passed', 'Auth header missing'],
+  auth:     ['Token verified', 'Permission granted', 'Invalid token', 'Session expired', 'Access denied'],
+  database: ['Query executed', 'Connection acquired', 'Slow query detected', 'Index hit', 'Connection pool exhausted'],
+  cache:    ['Cache hit', 'Cache miss', 'Key evicted', 'Cache warmed', 'TTL expired'],
+  queue:    ['Job enqueued', 'Job dequeued', 'Queue depth high', 'Dead-letter queue updated', 'Job processed'],
+  worker:   ['Task started', 'Task completed', 'Retry scheduled', 'Worker idle', 'Task failed'],
+  storage:  ['Object uploaded', 'Object downloaded', 'Object deleted', 'Storage quota near limit', 'Transfer complete'],
+  monitor:  ['Metric recorded', 'Alert triggered', 'Threshold exceeded', 'Stats aggregated', 'Health check passed'],
+};
+
+function emitDemoLogs(onMessage: (msg: WsMessage) => void): void {
+  const now = Date.now() * 1e6;
+  const logs: LogEvent[] = [];
+  const count = Math.floor(Math.random() * 4) + 1;
+
+  for (let i = 0; i < count; i++) {
+    const inst = randomChoice(demoInstances);
+    const isError = Math.random() < _cfg.errorRate * 2;
+    const severity = isError
+      ? LOG_SEVERITY_LEVELS[3]
+      : randomChoice(LOG_SEVERITY_LEVELS.slice(0, 3));
+    const messages = LOG_MESSAGES[inst.type] ?? ['log entry'];
+    const body = randomChoice(messages);
+    const jitterNs = Math.floor(Math.random() * 1_000_000_000);
+
+    logs.push({
+      timestamp_unix_nano: now - jitterNs,
+      observed_unix_nano:  now,
+      severity_text:       severity.text,
+      severity_number:     severity.number,
+      body,
+      trace_id:            null,
+      span_id:             null,
+      attributes:          [['service.instance.id', inst.id]],
+      service_name:        inst.id,
+    });
+  }
+
+  onMessage({ type: 'logs_batch', logs });
+}
+
 /**
  * Start demo mode: periodically emit topology and trace messages.
  * Calls onMessage with generated messages.
@@ -536,13 +592,18 @@ export function startDemo(onMessage: (msg: WsMessage) => void, scenario: DemoSce
   _liveIntervalId = traceInterval;
   _liveEmitFn     = emitTrace;
 
-  // Emit metrics every 2 s
+  // Emit metrics and logs every 2 s
   const firstMetricsTimeout = setTimeout(() => emitDemoMetrics(onMessage), 500);
-  _liveMetricsIntervalId = setInterval(() => emitDemoMetrics(onMessage), 2000);
+  const firstLogsTimeout    = setTimeout(() => emitDemoLogs(onMessage), 800);
+  _liveMetricsIntervalId = setInterval(() => {
+    emitDemoMetrics(onMessage);
+    emitDemoLogs(onMessage);
+  }, 2000);
 
   return () => {
     clearTimeout(firstTimeout);
     clearTimeout(firstMetricsTimeout);
+    clearTimeout(firstLogsTimeout);
     clearInterval(traceInterval);
     if (_liveMetricsIntervalId !== null) { clearInterval(_liveMetricsIntervalId); _liveMetricsIntervalId = null; }
     _liveIntervalId = null;
