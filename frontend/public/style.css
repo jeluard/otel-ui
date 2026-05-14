@@ -3218,6 +3218,141 @@
       overflow: hidden;
       flex-direction: row;
     }
+    .mc-main {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .mc-tabs {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      flex-shrink: 0;
+    }
+    .mc-tab-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 5px;
+      background: rgba(255,255,255,0.03);
+      color: #64748b;
+      font-size: 11px;
+      cursor: pointer;
+      transition: background 0.1s, color 0.1s, border-color 0.1s;
+    }
+    .mc-tab-btn:hover { background: rgba(255,255,255,0.08); color: #94a3b8; }
+    .mc-tab-btn.mc-tab-active {
+      background: rgba(34,211,238,0.1);
+      border-color: rgba(34,211,238,0.35);
+      color: #22d3ee;
+    }
+    .mc-tab-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: #22d3ee;
+    }
+    .mc-dashboard-layout {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      overflow: hidden;
+    }
+    .mc-raw {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .mc-raw-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      flex-shrink: 0;
+    }
+    .mc-raw-filter {
+      flex: 1;
+      max-width: 340px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 4px;
+      color: #e2e8f0;
+      font-size: 12px;
+      padding: 4px 8px;
+      outline: none;
+    }
+    .mc-raw-filter::placeholder { color: #475569; }
+    .mc-raw-filter:focus { border-color: rgba(34,211,238,0.45); }
+    .mc-raw-count {
+      font-size: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      color: #475569;
+      margin-left: auto;
+      white-space: nowrap;
+    }
+    .mc-action-btn.mc-raw-paused {
+      color: #22d3ee;
+      border-color: rgba(34,211,238,0.3);
+      background: rgba(34,211,238,0.08);
+    }
+    .mc-raw-body {
+      flex: 1;
+      overflow: auto;
+      min-height: 0;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+    }
+    .mc-raw-empty {
+      padding: 40px 24px;
+      color: #334155;
+      font-size: 12px;
+      text-align: center;
+      line-height: 1.7;
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+    .mc-raw-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    .mc-raw-table thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      text-align: left;
+      font-size: 10px;
+      color: #64748b;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      background: rgba(10,10,20,0.95);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      padding: 7px 8px;
+      white-space: nowrap;
+    }
+    .mc-raw-table tbody td {
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+      padding: 4px 8px;
+      vertical-align: top;
+      line-height: 1.45;
+      color: #cbd5e1;
+      word-break: break-word;
+    }
+    .mc-raw-table tbody tr:hover { background: rgba(255,255,255,0.03); }
+    .mc-raw-time { width: 90px; color: #334155 !important; white-space: nowrap; }
+    .mc-raw-service { width: 150px; color: #818cf8 !important; }
+    .mc-raw-metric { width: 180px; color: #94a3b8 !important; }
+    .mc-raw-kind { width: 86px; color: #22d3ee !important; text-transform: uppercase; font-size: 10px; }
+    .mc-raw-value { color: #e2e8f0 !important; }
+    .mc-raw-unit { width: 72px; color: #64748b !important; }
+    .mc-raw-attrs { color: #64748b !important; }
     #app.metrics-active #metrics-view   { display: flex; }
     #app.metrics-active #legend,
     #app.metrics-active #tooltip,

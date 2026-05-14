@@ -88,6 +88,12 @@ const WS_URL = (() => {
 const NODE_SPAN_MAX    = 200;
 /** Keep traces within this rolling window for the Statistics view (ms). */
 const STATS_WINDOW_MS  = 10 * 60 * 1000; // 10 minutes
+/** Frontend backpressure: keep live queue bounded and prioritize freshest spans. */
+const SPAN_QUEUE_MAX = 30_000;
+const SPAN_QUEUE_RECOVERY_TARGET = 10_000;
+const SPAN_QUEUE_DRAIN_BASE = 2_000;
+const SPAN_QUEUE_DRAIN_MAX = 8_000;
+const SPAN_QUEUE_SORT_THRESHOLD = 4_000;
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
@@ -543,6 +549,10 @@ export default function App() {
         }
 
         for (const item of msg.spans) st.spanQueue.push(item);
+        if (st.spanQueue.length > SPAN_QUEUE_MAX) {
+          // When lagging, prefer latest telemetry: discard oldest queued spans.
+          st.spanQueue.splice(0, st.spanQueue.length - SPAN_QUEUE_RECOVERY_TARGET);
+        }
         break;
       }
 
@@ -593,16 +603,27 @@ export default function App() {
       rafId = requestAnimationFrame(frame);
       const st = sharedRef.current;
 
-      // Drain span queue (max 200/frame) — skip in history mode
+      // Drain span queue — skip in history mode
       if (!historyEnabledRef.current && st.spanQueue.length > 0) {
-        const pending = st.spanQueue.splice(0, Math.min(st.spanQueue.length, 200));
-        pending.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
-        const minNs   = pending.reduce((m, s) => Math.min(m, s.start_time_unix_nano), Infinity);
-        const maxNs   = pending.reduce((m, s) => Math.max(m, s.start_time_unix_nano), -Infinity);
-        const rangeNs = maxNs - minNs || 1;
-        for (const m of pending) {
-          const staggerMs = ((m.start_time_unix_nano - minNs) / rangeNs) * 300;
-          processSpan(m, now + staggerMs);
+        const backlog = st.spanQueue.length;
+        const adaptiveDrain = Math.min(
+          SPAN_QUEUE_DRAIN_MAX,
+          SPAN_QUEUE_DRAIN_BASE + Math.floor(backlog / 4),
+        );
+        const pending = st.spanQueue.splice(0, Math.min(backlog, adaptiveDrain));
+
+        // Under heavy backlog, skip sort/stagger to reduce CPU and catch up.
+        if (backlog <= SPAN_QUEUE_SORT_THRESHOLD) {
+          pending.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+          const minNs   = pending.reduce((m, s) => Math.min(m, s.start_time_unix_nano), Infinity);
+          const maxNs   = pending.reduce((m, s) => Math.max(m, s.start_time_unix_nano), -Infinity);
+          const rangeNs = maxNs - minNs || 1;
+          for (const m of pending) {
+            const staggerMs = ((m.start_time_unix_nano - minNs) / rangeNs) * 300;
+            processSpan(m, now + staggerMs);
+          }
+        } else {
+          for (const m of pending) processSpan(m, now);
         }
 
         // Finalize any completed traces (root span signals completion)
@@ -703,9 +724,11 @@ export default function App() {
         const instantSps = st.spansThisSecond   * 1000 / elapsed;
         const instantTps = st.tracesThisSecond  * 1000 / elapsed;
         const instantMps = st.metricsThisSecond * 1000 / elapsed;
-        st.spsSmoothed = (st.spsSmoothed + instantSps) / 2;
-        st.tpsSmoothed = (st.tpsSmoothed + instantTps) / 2;
-        st.mpsSmoothed = (st.mpsSmoothed + instantMps) / 2;
+        // Keep smoothing while traffic is active, but snap to zero on idle windows
+        // so the header does not imply spans are still being received.
+        st.spsSmoothed = st.spansThisSecond === 0 ? 0 : (st.spsSmoothed + instantSps) / 2;
+        st.tpsSmoothed = st.tracesThisSecond === 0 ? 0 : (st.tpsSmoothed + instantTps) / 2;
+        st.mpsSmoothed = st.metricsThisSecond === 0 ? 0 : (st.mpsSmoothed + instantMps) / 2;
         setSps(Math.round(st.spsSmoothed));
         setTps(Math.round(st.tpsSmoothed));
         setMps(Math.round(st.mpsSmoothed));

@@ -5,6 +5,7 @@ import React, {
 } from 'react';
 import uPlot from 'uplot';
 import type { MetricEvent } from '../core/types.ts';
+import { fmtTime } from '../core/utils.ts';
 
 // ── Persistence helpers ────────────────────────────────────────────────────────
 
@@ -90,6 +91,7 @@ const WINDOW_OPTIONS: { label: string; value: number }[] = [
   { label: '1 h',   value: 3600 },
 ];
 const DEFAULT_WINDOW_SEC = 300;
+const MAX_RAW_METRICS = 2000;
 
 const SERIES_COLORS = [
   '#22d3ee', '#8b5cf6', '#10b981', '#f59e0b', '#ec4899',
@@ -119,6 +121,21 @@ function extractValue(e: MetricEvent): number | null {
 
 function attrSummary(attrs: [string, string][]): string {
   return attrs.map(([, v]) => v).join(', ');
+}
+
+function attrPairsSummary(attrs: [string, string][]): string {
+  return attrs.map(([k, v]) => `${k}=${v}`).join(', ');
+}
+
+function rawMetricValueText(e: MetricEvent): string {
+  switch (e.value.kind) {
+    case 'gauge':
+      return String(e.value.value);
+    case 'sum':
+      return `${e.value.value}${e.value.is_monotonic ? ' (monotonic)' : ''}`;
+    case 'histogram':
+      return `count=${e.value.count}, sum=${e.value.sum}, min=${e.value.min}, max=${e.value.max}`;
+  }
 }
 
 function buildData(
@@ -372,12 +389,41 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
   const [catalog,    setCatalog]    = useState<Map<string, SeriesMeta>>(new Map());
   const [panels,     setPanels]     = useState<Panel[]>([]);
   const [windowSec,  setWindowSec]  = useState<number>(DEFAULT_WINDOW_SEC);
+  const [tab,        setTab]        = useState<'dashboard' | 'raw'>('dashboard');
+
+  const [rawMetrics, setRawMetrics] = useState<MetricEvent[]>([]);
+  const [rawFilter, setRawFilter]   = useState('');
+  const [rawPaused, setRawPaused]   = useState(false);
+  const [rawUnread, setRawUnread]   = useState(0);
+  const rawMetricsRef = useRef<MetricEvent[]>([]);
+  const rawPausedRef  = useRef(false);
+  const rawBodyRef    = useRef<HTMLDivElement>(null);
+  const rawAtBottomRef = useRef(true);
 
   // ── Persistence state ────────────────────────────────────────────────────
   const fingerprintRef  = useRef<string>('');
   const loadedRef       = useRef<boolean>(false); // have we applied a saved dashboard?
   const importInputRef  = useRef<HTMLInputElement>(null);
   const [importBanner, setImportBanner] = useState<string | null>(null);
+
+  useEffect(() => { rawPausedRef.current = rawPaused; }, [rawPaused]);
+
+  useEffect(() => {
+    const el = rawBodyRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      rawAtBottomRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 32;
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (tab === 'raw' && !rawPaused && rawAtBottomRef.current) {
+      const el = rawBodyRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }
+  }, [rawMetrics, rawPaused, tab]);
 
   // Keep windowSecRef in sync
   useEffect(() => { windowSecRef.current = windowSec; }, [windowSec]);
@@ -434,6 +480,16 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
   useImperativeHandle(ref, () => ({
     onMetricsBatch(metrics: MetricEvent[]) {
       const updatedKeys = new Set<string>();
+
+      if (metrics.length > 0) {
+        const nextRaw = [...rawMetricsRef.current, ...metrics].slice(-MAX_RAW_METRICS);
+        rawMetricsRef.current = nextRaw;
+        if (rawPausedRef.current) {
+          setRawUnread(n => n + metrics.length);
+        } else {
+          setRawMetrics([...nextRaw]);
+        }
+      }
 
       for (const e of metrics) {
         const v = extractValue(e);
@@ -508,6 +564,13 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
       }
     },
   }), []);
+
+  const resumeRaw = useCallback(() => {
+    setRawPaused(false);
+    rawPausedRef.current = false;
+    setRawMetrics([...rawMetricsRef.current]);
+    setRawUnread(0);
+  }, []);
 
   // ── Panel mutation helpers ─────────────────────────────────────────────────
 
@@ -641,117 +704,230 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
 
   return (
     <div id="metrics-view">
-      {/* Left: catalog */}
-      <aside className="mc-sidebar">
-        <div className="mc-sidebar-hdr">Available metrics</div>
-
-        {grouped.length === 0 && (
-          <div className="mc-sidebar-empty">
-            No metrics received yet.<br />
-            Send OTLP metrics to the collector<br />
-            and they will appear here.
-          </div>
-        )}
-
-        {grouped.map(([metricName, entries]) => (
-          <div key={metricName} className="mc-metric-group">
-            <div className="mc-metric-name">{metricName}</div>
-            {entries.map(m => (
-              <div key={m.key} className="mc-series-row">
-                <div className="mc-series-info">
-                  <span className="mc-series-svc">{m.service}</span>
-                  {m.attrs.length > 0 && (
-                    <span className="mc-series-attrs">{attrSummary(m.attrs)}</span>
-                  )}
-                  {m.unit && <span className="mc-series-unit">[{m.unit}]</span>}
-                </div>
-                {usedKeyToPanel.has(m.key) ? (
-                  <div className="mc-series-used">
-                    <button
-                      className="mc-add-btn mc-goto-btn"
-                      title="Scroll to panel"
-                      onClick={() => scrollToPanel(usedKeyToPanel.get(m.key)!)}
-                    >↗ View</button>
-                    <button
-                      className="mc-icon-btn mc-remove-from-sidebar"
-                      title="Remove from panel"
-                      onClick={() => removeSeries(usedKeyToPanel.get(m.key)!, m.key)}
-                    >✕</button>
-                  </div>
-                ) : (
-                  <button
-                    className="mc-add-btn"
-                    title="Add to dashboard"
-                    onClick={e => { e.stopPropagation(); openPopover(e, m.key); }}
-                  >+ Add</button>
-                )}
-              </div>
-            ))}
-          </div>
-        ))}
-      </aside>
-
-      {/* Right: dashboard */}
-      <div className="mc-dashboard">
-        <div className="mc-dash-toolbar">
-          <label className="mc-window-label" htmlFor="mc-window-select">Window</label>
-          <select
-            id="mc-window-select"
-            className="mc-window-select"
-            value={windowSec}
-            onChange={e => setWindowSec(Number(e.target.value))}
+      <div className="mc-main">
+        <div className="mc-tabs">
+          <button
+            className={`mc-tab-btn${tab === 'dashboard' ? ' mc-tab-active' : ''}`}
+            onClick={() => setTab('dashboard')}
+          >Dashboard</button>
+          <button
+            className={`mc-tab-btn${tab === 'raw' ? ' mc-tab-active' : ''}`}
+            onClick={() => setTab('raw')}
           >
-            {WINDOW_OPTIONS.map(o => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
-          <div className="mc-dash-spacer" />
-          {fingerprintRef.current && (
-            <span className="mc-fingerprint" title="Identified by service names">
-              {fingerprintRef.current.split(',').join(' · ')}
-            </span>
-          )}
-          <button className="mc-action-btn" title="Export dashboard" onClick={handleExport}>
-            ↓ Export
+            Raw stream
+            {rawPaused && rawUnread > 0 && <span className="mc-tab-badge">+{rawUnread}</span>}
           </button>
-          <button className="mc-action-btn" title="Import dashboard" onClick={() => importInputRef.current?.click()}>
-            ↑ Import
-          </button>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept=".json,application/json"
-            style={{ display: 'none' }}
-            onChange={handleImport}
-          />
         </div>
-        {importBanner && (
-          <div className="mc-import-banner">{importBanner}</div>
-        )}
-        {panels.length === 0 ? (
-          <div className="mc-dash-empty">
-            <div className="mc-dash-empty-title">No panels yet</div>
-            <div className="mc-dash-empty-sub">
-              Click <strong>+ Add</strong> next to a metric on the left to create a panel.
-              <br />
-              Multiple series (even from different nodes) can be combined in the same panel.
+
+        {tab === 'dashboard' ? (
+          <div className="mc-dashboard-layout">
+            {/* Left: catalog */}
+            <aside className="mc-sidebar">
+              <div className="mc-sidebar-hdr">Available metrics</div>
+
+              {grouped.length === 0 && (
+                <div className="mc-sidebar-empty">
+                  No metrics received yet.<br />
+                  Send OTLP metrics to the collector<br />
+                  and they will appear here.
+                </div>
+              )}
+
+              {grouped.map(([metricName, entries]) => (
+                <div key={metricName} className="mc-metric-group">
+                  <div className="mc-metric-name">{metricName}</div>
+                  {entries.map(m => (
+                    <div key={m.key} className="mc-series-row">
+                      <div className="mc-series-info">
+                        <span className="mc-series-svc">{m.service}</span>
+                        {m.attrs.length > 0 && (
+                          <span className="mc-series-attrs">{attrSummary(m.attrs)}</span>
+                        )}
+                        {m.unit && <span className="mc-series-unit">[{m.unit}]</span>}
+                      </div>
+                      {usedKeyToPanel.has(m.key) ? (
+                        <div className="mc-series-used">
+                          <button
+                            className="mc-add-btn mc-goto-btn"
+                            title="Scroll to panel"
+                            onClick={() => scrollToPanel(usedKeyToPanel.get(m.key)!)}
+                          >↗ View</button>
+                          <button
+                            className="mc-icon-btn mc-remove-from-sidebar"
+                            title="Remove from panel"
+                            onClick={() => removeSeries(usedKeyToPanel.get(m.key)!, m.key)}
+                          >✕</button>
+                        </div>
+                      ) : (
+                        <button
+                          className="mc-add-btn"
+                          title="Add to dashboard"
+                          onClick={e => { e.stopPropagation(); openPopover(e, m.key); }}
+                        >+ Add</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </aside>
+
+            {/* Right: dashboard */}
+            <div className="mc-dashboard">
+              <div className="mc-dash-toolbar">
+                <label className="mc-window-label" htmlFor="mc-window-select">Window</label>
+                <select
+                  id="mc-window-select"
+                  className="mc-window-select"
+                  value={windowSec}
+                  onChange={e => setWindowSec(Number(e.target.value))}
+                >
+                  {WINDOW_OPTIONS.map(o => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <div className="mc-dash-spacer" />
+                {fingerprintRef.current && (
+                  <span className="mc-fingerprint" title="Identified by service names">
+                    {fingerprintRef.current.split(',').join(' · ')}
+                  </span>
+                )}
+                <button className="mc-action-btn" title="Export dashboard" onClick={handleExport}>
+                  ↓ Export
+                </button>
+                <button className="mc-action-btn" title="Import dashboard" onClick={() => importInputRef.current?.click()}>
+                  ↑ Import
+                </button>
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  style={{ display: 'none' }}
+                  onChange={handleImport}
+                />
+              </div>
+              {importBanner && (
+                <div className="mc-import-banner">{importBanner}</div>
+              )}
+              {panels.length === 0 ? (
+                <div className="mc-dash-empty">
+                  <div className="mc-dash-empty-title">No panels yet</div>
+                  <div className="mc-dash-empty-sub">
+                    Click <strong>+ Add</strong> next to a metric on the left to create a panel.
+                    <br />
+                    Multiple series (even from different nodes) can be combined in the same panel.
+                  </div>
+                </div>
+              ) : (
+                <div className="mc-grid">
+                  {panels.map(panel => (
+                    <ChartPanel
+                      key={panel.id}
+                      panel={panel}
+                      catalog={catalog}
+                      buffersRef={buffersRef}
+                      plotsRef={plotsRef}
+                      windowSecRef={windowSecRef}
+                      onPanelMount={handlePanelMount}
+                      onRemovePanel={removePanel}
+                      onRemoveSeries={removeSeries}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         ) : (
-          <div className="mc-grid">
-            {panels.map(panel => (
-              <ChartPanel
-                key={panel.id}
-                panel={panel}
-                catalog={catalog}
-                buffersRef={buffersRef}
-                plotsRef={plotsRef}
-                windowSecRef={windowSecRef}
-                onPanelMount={handlePanelMount}
-                onRemovePanel={removePanel}
-                onRemoveSeries={removeSeries}
+          <div className="mc-raw">
+            <div className="mc-raw-toolbar">
+              <input
+                className="mc-raw-filter"
+                type="text"
+                placeholder="Filter metrics..."
+                value={rawFilter}
+                onChange={e => setRawFilter(e.target.value)}
               />
-            ))}
+              <span className="mc-raw-count">
+                {rawMetrics.filter(m => {
+                  const q = rawFilter.trim().toLowerCase();
+                  if (!q) return true;
+                  const hay = [
+                    m.service_name,
+                    m.metric_name,
+                    m.description,
+                    m.unit,
+                    m.value.kind,
+                    attrPairsSummary(m.attributes),
+                    rawMetricValueText(m),
+                  ].join(' ').toLowerCase();
+                  return hay.includes(q);
+                }).length} / {rawMetrics.length}
+              </span>
+              <button
+                className={`mc-action-btn${rawPaused ? ' mc-raw-paused' : ''}`}
+                title={rawPaused ? 'Resume live stream' : 'Pause live stream'}
+                onClick={() => rawPaused ? resumeRaw() : setRawPaused(true)}
+              >
+                {rawPaused ? `▶ Resume${rawUnread ? ` (${rawUnread})` : ''}` : '⏸ Pause'}
+              </button>
+              <button
+                className="mc-action-btn"
+                title="Clear raw metrics"
+                onClick={() => {
+                  rawMetricsRef.current = [];
+                  setRawMetrics([]);
+                  setRawUnread(0);
+                }}
+              >✕ Clear</button>
+            </div>
+            <div className="mc-raw-body" ref={rawBodyRef}>
+              {rawMetrics.length === 0 ? (
+                <div className="mc-raw-empty">
+                  No metrics received yet. Send OTLP metrics to the collector and they will appear here.
+                </div>
+              ) : (
+                <table className="mc-raw-table">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Service</th>
+                      <th>Metric</th>
+                      <th>Kind</th>
+                      <th>Value</th>
+                      <th>Unit</th>
+                      <th>Attributes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rawMetrics
+                      .filter(m => {
+                        const q = rawFilter.trim().toLowerCase();
+                        if (!q) return true;
+                        const hay = [
+                          m.service_name,
+                          m.metric_name,
+                          m.description,
+                          m.unit,
+                          m.value.kind,
+                          attrPairsSummary(m.attributes),
+                          rawMetricValueText(m),
+                        ].join(' ').toLowerCase();
+                        return hay.includes(q);
+                      })
+                      .map((m, i) => (
+                        <tr key={i}>
+                          <td className="mc-raw-time">{m.timestamp_unix_nano ? fmtTime(m.timestamp_unix_nano) : '—'}</td>
+                          <td className="mc-raw-service">{m.service_name}</td>
+                          <td className="mc-raw-metric">{m.metric_name}</td>
+                          <td className="mc-raw-kind">{m.value.kind}</td>
+                          <td className="mc-raw-value">{rawMetricValueText(m)}</td>
+                          <td className="mc-raw-unit">{m.unit || '—'}</td>
+                          <td className="mc-raw-attrs">{m.attributes.length ? attrPairsSummary(m.attributes) : '—'}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
         )}
       </div>
