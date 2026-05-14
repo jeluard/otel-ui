@@ -5,7 +5,6 @@ import React, {
 } from 'react';
 import uPlot from 'uplot';
 import type { MetricEvent } from '../core/types.ts';
-import { fmtTime } from '../core/utils.ts';
 
 // ── Persistence helpers ────────────────────────────────────────────────────────
 
@@ -400,11 +399,9 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
   const [rawFilter, setRawFilter]   = useState('');
   const [rawPaused, setRawPaused]   = useState(false);
   const [rawUnread, setRawUnread]   = useState(0);
-  // Keyed by full series identity so value and attributes stay in sync.
+  // Keyed by metric name so raw stream shows one row per metric.
   const rawMetricsRef = useRef<Map<string, MetricEvent>>(new Map());
   const rawPausedRef  = useRef(false);
-  const rawBodyRef    = useRef<HTMLDivElement>(null);
-  const rawAtBottomRef = useRef(true);
 
   // ── Persistence state ────────────────────────────────────────────────────
   const fingerprintRef  = useRef<string>('');
@@ -413,23 +410,6 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
   const [importBanner, setImportBanner] = useState<string | null>(null);
 
   useEffect(() => { rawPausedRef.current = rawPaused; }, [rawPaused]);
-
-  useEffect(() => {
-    const el = rawBodyRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      rawAtBottomRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 32;
-    };
-    el.addEventListener('scroll', onScroll, { passive: true });
-    return () => el.removeEventListener('scroll', onScroll);
-  }, []);
-
-  useEffect(() => {
-    if (tab === 'raw' && !rawPaused && rawAtBottomRef.current) {
-      const el = rawBodyRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
-    }
-  }, [rawMetrics, rawPaused, tab]);
 
   // Keep windowSecRef in sync
   useEffect(() => { windowSecRef.current = windowSec; }, [windowSec]);
@@ -489,8 +469,7 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
 
       if (metrics.length > 0) {
         for (const e of metrics) {
-          const k = seriesKey(e);
-          rawMetricsRef.current.set(k, e);
+          rawMetricsRef.current.set(e.metric_name, e);
         }
         if (rawPausedRef.current) {
           setRawUnread(rawMetricsRef.current.size);
@@ -887,7 +866,7 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
                 }}
               >✕ Clear</button>
             </div>
-            <div className="mc-raw-body" ref={rawBodyRef}>
+            <div className="mc-raw-body">
               {rawMetrics.length === 0 ? (
                 <div className="mc-raw-empty">
                   No metrics received yet. Send OTLP metrics to the collector and they will appear here.
@@ -896,7 +875,6 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
                 <table className="mc-raw-table">
                   <thead>
                     <tr>
-                      <th>Time</th>
                       <th>Service</th>
                       <th>Metric</th>
                       <th>Kind</th>
@@ -923,7 +901,6 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
                       })
                       .map((m, i) => (
                         <tr key={i}>
-                          <td className="mc-raw-time">{m.timestamp_unix_nano ? fmtTime(m.timestamp_unix_nano) : '—'}</td>
                           <td className="mc-raw-service">{m.service_name}</td>
                           <td className="mc-raw-metric">{m.metric_name}</td>
                           <td className="mc-raw-kind">{m.value.kind}</td>
