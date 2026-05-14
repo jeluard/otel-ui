@@ -55,36 +55,16 @@ impl TraceService for OtlpTraceReceiver {
         let mut batch: Vec<SpanEvent> = Vec::new();
 
         for resource_spans in req.resource_spans {
-            let service_name = resource_spans
+            let base_service_name = resource_spans
                 .resource
                 .as_ref()
-                .and_then(|r| {
-                    r.attributes.iter().find(|kv| kv.key == "service.name").and_then(|kv| {
-                        kv.value.as_ref().and_then(|v| {
-                            if let Some(AnyValueKind::StringValue(s)) = &v.value {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    })
-                })
+                .and_then(|r| find_attr_string(&r.attributes, "service.name"))
                 .unwrap_or_else(|| "unknown".to_string());
 
             let instance_id = resource_spans
                 .resource
                 .as_ref()
-                .and_then(|r| {
-                    r.attributes.iter().find(|kv| kv.key == "service.instance.id").and_then(|kv| {
-                        kv.value.as_ref().and_then(|v| {
-                            if let Some(AnyValueKind::StringValue(s)) = &v.value {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    })
-                })
+                .and_then(|r| find_attr_string(&r.attributes, "service.instance.id"))
                 .unwrap_or_default();
 
             for scope_spans in resource_spans.scope_spans {
@@ -93,6 +73,13 @@ impl TraceService for OtlpTraceReceiver {
                     .as_ref()
                     .map(|s| s.name.clone())
                     .unwrap_or_default();
+                let effective_service_name = if is_unknown_service_name(&base_service_name)
+                    && !scope_target.is_empty()
+                {
+                    scope_target.clone()
+                } else {
+                    base_service_name.clone()
+                };
 
                 for span in scope_spans.spans {
                     let trace_id = hex::encode(&span.trace_id);
@@ -140,7 +127,7 @@ impl TraceService for OtlpTraceReceiver {
                         duration_ms,
                         attributes,
                         status,
-                        service_name: service_name.clone(),
+                        service_name: effective_service_name.clone(),
                         instance_id: instance_id.clone(),
                     });
                 }
@@ -207,6 +194,25 @@ fn kv_to_string(value: &Option<AnyValue>) -> String {
     }
 }
 
+fn find_attr_string(
+    attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
+    key: &str,
+) -> Option<String> {
+    attrs
+        .iter()
+        .find(|kv| kv.key == key)
+        .and_then(|kv| kv.value.as_ref())
+        .and_then(|v| match &v.value {
+            Some(AnyValueKind::StringValue(s)) => Some(s.clone()),
+            _ => None,
+        })
+}
+
+fn is_unknown_service_name(name: &str) -> bool {
+    let n = name.trim();
+    n.is_empty() || n == "unknown" || n == "unknown_service" || n.starts_with("unknown_service:")
+}
+
 // ── Metrics receiver ────────────────────────────────────────────────────────
 
 pub struct OtlpMetricsReceiver {
@@ -223,23 +229,35 @@ impl MetricsService for OtlpMetricsReceiver {
         let mut batch: Vec<MetricEvent> = Vec::new();
 
         for resource_metrics in req.resource_metrics {
-            let service_name = resource_metrics
+            let base_service_name = resource_metrics
                 .resource
                 .as_ref()
-                .and_then(|r| {
-                    r.attributes.iter().find(|kv| kv.key == "service.name").and_then(|kv| {
-                        kv.value.as_ref().and_then(|v| {
-                            if let Some(AnyValueKind::StringValue(s)) = &v.value {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    })
-                })
+                .and_then(|r| find_attr_string(&r.attributes, "service.name"))
                 .unwrap_or_else(|| "unknown".to_string());
+            let instance_id = resource_metrics
+                .resource
+                .as_ref()
+                .and_then(|r| find_attr_string(&r.attributes, "service.instance.id"))
+                .unwrap_or_default();
 
             for scope_metrics in resource_metrics.scope_metrics {
+                let scope_name = scope_metrics
+                    .scope
+                    .as_ref()
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default();
+                let effective_service_name = if is_unknown_service_name(&base_service_name) {
+                    if !scope_name.is_empty() {
+                        scope_name.clone()
+                    } else if !instance_id.is_empty() {
+                        format!("instance:{}", instance_id)
+                    } else {
+                        base_service_name.clone()
+                    }
+                } else {
+                    base_service_name.clone()
+                };
+
                 for metric in scope_metrics.metrics {
                     let name        = metric.name.clone();
                     let description = metric.description.clone();
@@ -254,7 +272,7 @@ impl MetricsService for OtlpMetricsReceiver {
                                     None                           => continue,
                                 };
                                 batch.push(MetricEvent {
-                                    service_name:        service_name.clone(),
+                                    service_name:        effective_service_name.clone(),
                                     metric_name:         name.clone(),
                                     description:         description.clone(),
                                     unit:                unit.clone(),
@@ -273,7 +291,7 @@ impl MetricsService for OtlpMetricsReceiver {
                                     None                           => continue,
                                 };
                                 batch.push(MetricEvent {
-                                    service_name:        service_name.clone(),
+                                    service_name:        effective_service_name.clone(),
                                     metric_name:         name.clone(),
                                     description:         description.clone(),
                                     unit:                unit.clone(),
@@ -286,7 +304,7 @@ impl MetricsService for OtlpMetricsReceiver {
                         Some(Data::Histogram(h)) => {
                             for dp in h.data_points {
                                 batch.push(MetricEvent {
-                                    service_name:        service_name.clone(),
+                                    service_name:        effective_service_name.clone(),
                                     metric_name:         name.clone(),
                                     description:         description.clone(),
                                     unit:                unit.clone(),
