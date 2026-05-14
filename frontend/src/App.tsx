@@ -103,7 +103,6 @@ export default function App() {
   const [demoMode,       setDemoMode]       = useState(false);
   const [demoScenario,   setDemoScenario]   = useState<DemoScenario>('standard');
   const [demoConfig,     setDemoConfigState] = useState<DemoConfig>({ ...DEFAULT_DEMO_CONFIG });
-  const [welcomeVisible, setWelcomeVisible] = useState(!HAS_HASH_WS);
   const [activeTab,      setActiveTab]      = useState<TabId>('diagram');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [hasData,        setHasData]        = useState(false);
@@ -114,6 +113,7 @@ export default function App() {
   const [showHideRules,    setShowHideRules]    = useState(false);
   const [completedTraces,  setCompletedTraces]  = useState<TraceComplete[]>([]);
   const [hasReceivedTraces, setHasReceivedTraces] = useState(false);
+  const [welcomeVisible, setWelcomeVisible] = useState(true);
   const completedTracesRef = useRef<TraceComplete[]>([]);
   useEffect(() => { completedTracesRef.current = completedTraces; }, [completedTraces]);
 
@@ -877,6 +877,7 @@ export default function App() {
         onEnterDemo={activateDemo}
         historyPlayback={historyPlayback}
         hasReceivedTraces={hasReceivedTraces}
+        wsUrl={WS_URL}
       />
 
       {HAS_HASH_WS && !welcomeVisible && !hasData && (

@@ -91,8 +91,6 @@ const WINDOW_OPTIONS: { label: string; value: number }[] = [
   { label: '1 h',   value: 3600 },
 ];
 const DEFAULT_WINDOW_SEC = 300;
-const MAX_RAW_METRICS = 2000;
-
 const SERIES_COLORS = [
   '#22d3ee', '#8b5cf6', '#10b981', '#f59e0b', '#ec4899',
   '#14b8a6', '#f43f5e', '#6366f1', '#0ea5e9', '#a855f7', '#84cc16', '#f97316',
@@ -136,6 +134,13 @@ function rawMetricValueText(e: MetricEvent): string {
     case 'histogram':
       return `count=${e.value.count}, sum=${e.value.sum}, min=${e.value.min}, max=${e.value.max}`;
   }
+}
+
+/**
+ * Extract dashboard key (service + metric name) from a metric for deduplication.
+ */
+function dashboardKey(e: MetricEvent): string {
+  return `${e.service_name}\0${e.metric_name}`;
 }
 
 function buildData(
@@ -395,7 +400,8 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
   const [rawFilter, setRawFilter]   = useState('');
   const [rawPaused, setRawPaused]   = useState(false);
   const [rawUnread, setRawUnread]   = useState(0);
-  const rawMetricsRef = useRef<MetricEvent[]>([]);
+  // Keyed by full series identity so value and attributes stay in sync.
+  const rawMetricsRef = useRef<Map<string, MetricEvent>>(new Map());
   const rawPausedRef  = useRef(false);
   const rawBodyRef    = useRef<HTMLDivElement>(null);
   const rawAtBottomRef = useRef(true);
@@ -482,12 +488,14 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
       const updatedKeys = new Set<string>();
 
       if (metrics.length > 0) {
-        const nextRaw = [...rawMetricsRef.current, ...metrics].slice(-MAX_RAW_METRICS);
-        rawMetricsRef.current = nextRaw;
+        for (const e of metrics) {
+          const k = seriesKey(e);
+          rawMetricsRef.current.set(k, e);
+        }
         if (rawPausedRef.current) {
-          setRawUnread(n => n + metrics.length);
+          setRawUnread(rawMetricsRef.current.size);
         } else {
-          setRawMetrics([...nextRaw]);
+          setRawMetrics([...rawMetricsRef.current.values()]);
         }
       }
 
@@ -495,7 +503,7 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
         const v = extractValue(e);
         if (v === null) continue;
 
-        const key = seriesKey(e);
+        const key = dashboardKey(e);  // Use dashboard key (ignore attributes)
         const ts  = e.timestamp_unix_nano > 0 ? e.timestamp_unix_nano / 1e9 : Date.now() / 1000;
 
         // Update rolling buffer
@@ -568,7 +576,7 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
   const resumeRaw = useCallback(() => {
     setRawPaused(false);
     rawPausedRef.current = false;
-    setRawMetrics([...rawMetricsRef.current]);
+    setRawMetrics([...rawMetricsRef.current.values()]);
     setRawUnread(0);
   }, []);
 
@@ -873,7 +881,7 @@ const MetricsView = forwardRef<MetricsViewHandle>(function MetricsView(_props, r
                 className="mc-action-btn"
                 title="Clear raw metrics"
                 onClick={() => {
-                  rawMetricsRef.current = [];
+                  rawMetricsRef.current = new Map();
                   setRawMetrics([]);
                   setRawUnread(0);
                 }}

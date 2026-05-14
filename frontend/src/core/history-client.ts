@@ -1,11 +1,14 @@
 // ── History REST client ────────────────────────────────────────────────────────
-// Mirrors the WS_URL logic: in dev mode (port 8080) the backend is on 8081.
+// Mirrors the WS_URL logic: in dev mode the backend is on 8081.
 
 import type { TraceComplete, TraceBounds } from './types.ts';
 
 const API_BASE = (() => {
   const { hostname, port, protocol } = window.location;
-  if (port === '8080') return `${protocol}//${hostname}:8081`;
+  // In dev with frontend fallback ports (8082+), backend is still on 8081
+  const devFallbackPorts = new Set(['8080', '8082', '8083', '8084', '8085', '8090', '3000']);
+  if (devFallbackPorts.has(port)) return `${protocol}//${hostname}:8081`;
+  // Otherwise use same port (assumes backend on same host)
   return `${protocol}//${hostname}${port ? ':' + port : ''}`;
 })();
 

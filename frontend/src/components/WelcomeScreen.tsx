@@ -13,9 +13,10 @@ interface WelcomeScreenProps {
   onEnterDemo: (scenario: DemoScenario) => void;
   historyPlayback?: HistoryPlayback;
   hasReceivedTraces?: boolean;
+  wsUrl: string;
 }
 
-export default function WelcomeScreen({ wsConnected, welcomeVisible, onConnectLive, onEnterDemo, historyPlayback, hasReceivedTraces }: WelcomeScreenProps) {
+export default function WelcomeScreen({ wsConnected, welcomeVisible, onConnectLive, onEnterDemo, historyPlayback, hasReceivedTraces, wsUrl }: WelcomeScreenProps) {
   const [scenario, setScenario] = useState<DemoScenario>('standard');
 
   if (!welcomeVisible || historyPlayback?.historyEnabled) return null;
@@ -60,7 +61,7 @@ export default function WelcomeScreen({ wsConnected, welcomeVisible, onConnectLi
           </div>
           <div className="hint-code">OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317</div>
           <div className="welcome-step" style={{ marginTop: 8, color: 'rgba(255,255,255,0.4)', fontSize: 11 }}>
-            gRPC :4317 · HTTP :4318 · WS ws://localhost:8080
+            gRPC :4317 · HTTP :4318 · WS {wsUrl}
           </div>
           {hasHistoryData && (
             <>
