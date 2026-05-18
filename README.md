@@ -49,6 +49,9 @@ This exposes:
 - `:4318` — OTLP HTTP/protobuf endpoint (metrics)
 - `:8080` — WebSocket + HTTP API for the UI
 
+The backend accepts a configurable gRPC compression mode via `OTEL_UI_OTLP_GRPC_COMPRESSION`.
+Use `gzip` to compress forwarded OTLP/gRPC payloads or `none` to disable compression. The default is `gzip`.
+
 ### Using the hosted UI
 
 A hosted version of the frontend is available at [https://jeluard.github.io/otel-ui](https://jeluard.github.io/otel-ui). Point it at your local backend by appending the WebSocket URL to the hash:

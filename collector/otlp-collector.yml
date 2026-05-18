@@ -10,6 +10,7 @@ exporters:
   # Forward to our custom Rust WebSocket backend
   otlp/traces-ui:
     endpoint: "traces-backend:4317"
+    compression: ${env:OTEL_UI_OTLP_GRPC_COMPRESSION:-gzip}
     tls:
       insecure: true
 

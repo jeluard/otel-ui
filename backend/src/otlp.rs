@@ -27,7 +27,7 @@ use opentelemetry_proto::tonic::{
     metrics::v1::{metric::Data, number_data_point::Value as NumberValue},
 };
 use prost::Message;
-use tonic::{transport::Server, Request, Response, Status};
+use tonic::{codec::CompressionEncoding, transport::Server, Request, Response, Status};
 use tracing::info;
 
 use crate::state::{AppState, LogEvent, MetricEvent, MetricValue, SpanEvent, WsMessage};
@@ -340,10 +340,20 @@ pub async fn run_otlp_server(state: Arc<AppState>, addr: &str) -> anyhow::Result
     let addr = addr.parse()?;
     info!("OTLP gRPC receiver on {}", addr);
 
+    // Accept gzip-compressed requests and emit gzip-compressed responses for OTLP gRPC.
     Server::builder()
-        .add_service(TraceServiceServer::new(OtlpTraceReceiver { state: state.clone() }))
-        .add_service(MetricsServiceServer::new(OtlpMetricsReceiver { state: state.clone() }))
-        .add_service(LogsServiceServer::new(OtlpLogsReceiver { state }))
+        .add_service(
+            TraceServiceServer::new(OtlpTraceReceiver { state: state.clone() })
+                .accept_compressed(CompressionEncoding::Gzip),
+        )
+        .add_service(
+            MetricsServiceServer::new(OtlpMetricsReceiver { state: state.clone() })
+                .accept_compressed(CompressionEncoding::Gzip),
+        )
+        .add_service(
+            LogsServiceServer::new(OtlpLogsReceiver { state })
+                .accept_compressed(CompressionEncoding::Gzip),
+        )
         .serve(addr)
         .await?;
 
