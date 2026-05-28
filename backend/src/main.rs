@@ -1,7 +1,4 @@
-mod db;
-mod otlp;
-mod state;
-mod ws;
+use otel_ui_backend::{db, otlp, state, ws};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -77,13 +74,11 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let state = Arc::new(AppState::new(
-        Arc::clone(&db),
-    ));
+    let state = Arc::new(AppState::new(Arc::clone(&db)));
 
     // Start the OTLP gRPC receiver
     let otlp_state = state.clone();
-    let otlp_addr  = args.otlp_addr.clone();
+    let otlp_addr = args.otlp_addr.clone();
     tokio::spawn(async move {
         if let Err(e) = otlp::run_otlp_server(otlp_state, &otlp_addr).await {
             tracing::error!("OTLP gRPC server error: {}", e);
@@ -92,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Start the OTLP HTTP receiver
     let otlp_http_state = state.clone();
-    let otlp_http_addr  = args.otlp_http_addr.clone();
+    let otlp_http_addr = args.otlp_http_addr.clone();
     tokio::spawn(async move {
         if let Err(e) = otlp::run_otlp_http_server(otlp_http_state, &otlp_http_addr).await {
             tracing::error!("OTLP HTTP server error: {}", e);
