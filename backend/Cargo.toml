@@ -9,6 +9,10 @@ edition = "2021"
 name = "otel-ui-backend"
 path = "src/main.rs"
 
+[lib]
+name = "otel_ui_backend"
+path = "src/lib.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1.51.1", features = ["full"] }
