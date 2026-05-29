@@ -36,6 +36,9 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# HTTP client for dashboard proxy
+reqwest = "0.12"
+
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 dashmap = "6"

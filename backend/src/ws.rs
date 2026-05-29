@@ -7,7 +7,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
     },
-    http::StatusCode,
+    http::{StatusCode, Uri},
     response::IntoResponse,
     routing::get,
     Json, Router,
@@ -15,7 +15,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::state::AppState;
 
@@ -33,6 +33,8 @@ pub async fn run_http_server(state: SharedState, bind: &str) -> anyhow::Result<(
         .route("/config", get(config_handler))
         .route("/api/traces", get(traces_handler))
         .route("/api/traces/bounds", get(traces_bounds_handler))
+        .route("/amaru-dashboard/", get(dashboard_proxy))
+        .route("/amaru-dashboard/{*path}", get(dashboard_proxy))
         .layer(cors)
         .with_state(state);
 
@@ -56,7 +58,49 @@ async fn config_handler(
     (StatusCode::OK, [(header::CONTENT_TYPE, "application/json")], (*state.get_config_json()).clone())
 }
 
-// ── History API ────────────────────────────────────────────────────────────────
+/// Reverse-proxy for the amaru-dashboard static assets.
+///
+/// Requests to `/amaru-dashboard/...` are forwarded to
+/// `https://jeluard.github.io/amaru-dashboard/...` and returned verbatim.
+/// Because the iframe is served from `http://localhost:8081`, the WebSocket
+/// connection to `ws://localhost:8081/ws` is same-origin and never subject
+/// to mixed-content blocking.
+async fn dashboard_proxy(uri: Uri) -> impl IntoResponse {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default()
+    });
+
+    let suffix = uri.path().strip_prefix("/amaru-dashboard").unwrap_or("");
+    let url = format!("https://jeluard.github.io/amaru-dashboard{}", suffix);
+
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let content_type = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            let body = resp.bytes().await.unwrap_or_default();
+            axum::response::Response::builder()
+                .status(status)
+                .header(axum::http::header::CONTENT_TYPE, &content_type)
+                .body(axum::body::Body::from(body))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+        Err(e) => {
+            warn!("Dashboard proxy error for {}: {}", uri.path(), e);
+            StatusCode::BAD_GATEWAY.into_response()
+        }
+    }
+}
+
+// ── History API ──────────────────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct TraceQueryParams {
